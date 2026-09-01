@@ -10,7 +10,7 @@ import yfinance as yf
 
 # Lehe seadistus
 st.set_page_config(
-    page_title="Energiaturu dashboard",
+    page_title="Energiaturu ja reservide armatuurlaud",
     page_icon="⚡",
     layout="wide",
 )
@@ -129,7 +129,7 @@ def fetch_commodity_history(ticker_symbols, period="1y", interval="1d"):
 
 @st.cache_data(ttl=600)
 def fetch_frequency_reserves_full():
-    """Loob ja pärib sagedusreservide (FCR, aFRR, mFRR) andmed alates 01.01.2026."""
+    """Loob ja pärib sagedusreservide andmed alates 01.01.2026."""
     now_local = datetime.now()
 
     # 1. Tänane ja homne lühiajaline (15-min samm)
@@ -142,12 +142,11 @@ def fetch_frequency_reserves_full():
     df_short_res["mFRR_up_capacity"] = 12.00
     df_short_res["mFRR_down_capacity"] = 6.50
 
-    # 2. Ajalugu alates 01.01.2026 (päevakeskmised)
+    # 2. Ajalugu alates 01.01.2026
     start_history = datetime(2026, 1, 1)
     days_count = max(1, (now_local.date() - start_history.date()).days + 1)
     dates = [start_history + timedelta(days=i) for i in range(days_count)]
 
-    # Deterministlikud turu tasemed alates 01.01.2026
     np.random.seed(42)
     fcr_trend = 17.5 + 2.0 * np.sin(np.linspace(0, 3, days_count))
     afrr_up_trend = 23.0 + 3.5 * np.cos(np.linspace(0, 3, days_count))
@@ -165,7 +164,6 @@ def fetch_frequency_reserves_full():
     })
     df_hist_res["date"] = pd.to_datetime(df_hist_res["date"])
 
-    # Kuude keskmised alates 01.01.2026
     df_hist_res["month"] = df_hist_res["date"].dt.strftime("%Y-%m")
     df_monthly_res = (
         df_hist_res.groupby("month")[
@@ -178,7 +176,7 @@ def fetch_frequency_reserves_full():
     return df_short_res, df_hist_res, df_monthly_res
 
 
-# --- 2. PÄIS JA JUHTIMINE ---
+# --- 2. PÄIS JA ÜHTNE PERIOODIVALIK ---
 
 col_title, col_btn = st.columns([5, 1])
 with col_title:
@@ -188,30 +186,52 @@ with col_btn:
         st.cache_data.clear()
         st.rerun()
 
-period_map = {
-    "1 nädal": "7d",
-    "1 kuu": "1mo",
-    "3 kuud": "3mo",
-    "6 kuud": "6mo",
-    "12 kuud": "1y",
-    "5 aastat": "5y",
+# Perioodide seos päevade arvuga
+period_config = {
+    "1 nädal": {"yf": "7d", "days": 7},
+    "1 kuu": {"yf": "1mo", "days": 30},
+    "3 kuud": {"yf": "3mo", "days": 90},
+    "6 kuud": {"yf": "6mo", "days": 180},
+    "12 kuud": {"yf": "1y", "days": 365},
+    "5 aastat": {"yf": "5y", "days": 365 * 5},
 }
+
 selected_period_label = st.segmented_control(
-    "Ajaloo periood (Gaas, Nafta, CO₂):",
-    options=list(period_map.keys()),
+    "Vali ajaloo periood (rakendub kõigile graafikutele):",
+    options=list(period_config.keys()),
     default="12 kuud",
 )
-selected_period = period_map[selected_period_label]
+selected_yf_period = period_config[selected_period_label]["yf"]
+selected_days = period_config[selected_period_label]["days"]
 
+# Andmete laadimine
 with st.spinner("Laadin turu- ja reserviandmeid..."):
     df_short = fetch_elering_short_term()
     df_raw, df_daily, df_monthly = fetch_elering_long_history(years=5)
-    df_ttf = fetch_commodity_history(["TTF=F"], period=selected_period)
-    df_brent = fetch_commodity_history(["BZ=F"], period=selected_period)
+    df_ttf = fetch_commodity_history(["TTF=F"], period=selected_yf_period)
+    df_brent = fetch_commodity_history(["BZ=F"], period=selected_yf_period)
     df_co2 = fetch_commodity_history(
-        ["CO2.L", "CARB.L", "KEUA"], period=selected_period
+        ["CO2.L", "CARB.L", "KEUA"], period=selected_yf_period
     )
     df_res_short, df_res_hist, df_res_monthly = fetch_frequency_reserves_full()
+
+# Filtreerime elektri pikaajalise päevaandmestiku vastavalt valitud perioodile
+if not df_daily.empty:
+    cutoff_date = pd.to_datetime(
+        datetime.now().date() - timedelta(days=selected_days)
+    )
+    df_daily_filtered = df_daily[df_daily["date"] >= cutoff_date]
+else:
+    df_daily_filtered = pd.DataFrame()
+
+# Filtreerime sagedusreservide ajaloo vastavalt valitud perioodile
+if not df_res_hist.empty:
+    cutoff_res = pd.to_datetime(
+        datetime.now().date() - timedelta(days=selected_days)
+    )
+    df_res_hist_filtered = df_res_hist[df_res_hist["date"] >= cutoff_res]
+else:
+    df_res_hist_filtered = pd.DataFrame()
 
 interval_seconds = 3600
 if len(df_short) > 1:
@@ -320,8 +340,8 @@ st.divider()
 # --- 4. GRAAFIKUD JA VAHELEHED ---
 
 tab_el, tab_reserves, tab_gas, tab_oil, tab_co2 = st.tabs([
-    "⚡ Elekter (päev, 5a ja tabel)",
-    "🔄 Sagedusreservid (alates 01.01.2026)",
+    "⚡ Elekter (päev, ajalugu ja tabel)",
+    "🔄 Sagedusreservid",
     "🔥 Dutch TTF Gaas",
     "🛢️ Brent Nafta",
     "🌱 EU ETS Süsinikukvoot",
@@ -386,14 +406,17 @@ with tab_el:
 
     st.markdown("---")
 
-    st.markdown("#### 2. Eesti hinnapiirkonna viimase 5 aasta hinnad (päevade kaupa)")
-    if not df_daily.empty:
+    # 2. Elektri ajalooline graafik vastavalt valitud perioodile
+    st.markdown(
+        f"#### 2. Eesti hinnapiirkonna päeva keskmised hinnad ({selected_period_label})"
+    )
+    if not df_daily_filtered.empty:
         fig_daily = px.line(
-            df_daily,
+            df_daily_filtered,
             x="date",
             y="mean",
             labels={"date": "Kuupäev", "mean": "Päeva keskmine hind (€/MWh)"},
-            title="Nord Pool Eesti päeva aritmeetilised keskmised hinnad (viimased 5 aastat)",
+            title=f"Nord Pool Eesti päeva aritmeetilised keskmised ({selected_period_label})",
         )
         fig_daily.update_traces(line_color="#1f77b4", line_width=1.5)
         st.plotly_chart(fig_daily, use_container_width=True)
@@ -402,6 +425,7 @@ with tab_el:
 
     st.markdown("---")
 
+    # 3. Jooksva aasta kuude tabel
     current_year = datetime.now().year
     st.markdown(
         f"#### 3. Jooksva aasta ({current_year}) kuude ülevaade ja aritmeetiline keskmine"
@@ -483,7 +507,7 @@ with tab_el:
     )
 
 
-# --- VAHELEHT 2: SAGEDUSRESERVID (KOOS AJALOOGA ALATES 01.01.2026) ---
+# --- VAHELEHT 2: SAGEDUSRESERVID ---
 with tab_reserves:
     st.markdown("#### 1. Jooksva ja homse päeva sagedusreservide tasud (BBCM)")
     if not df_res_short.empty:
@@ -537,14 +561,16 @@ with tab_reserves:
 
     st.markdown("---")
 
-    # 2. Sagedusreservide ajalooline graafik alates 01.01.2026
-    st.markdown("#### 2. Sagedusreservide hindade ajalugu alates 01.01.2026 (päevade kaupa)")
-    if not df_res_hist.empty:
+    # 2. Sagedusreservide ajalooline graafik filtreeritud perioodiga
+    st.markdown(
+        f"#### 2. Sagedusreservide hindade ajalugu ({selected_period_label})"
+    )
+    if not df_res_hist_filtered.empty:
         fig_res_hist = go.Figure()
         fig_res_hist.add_trace(
             go.Scatter(
-                x=df_res_hist["date"],
-                y=df_res_hist["FCR"],
+                x=df_res_hist_filtered["date"],
+                y=df_res_hist_filtered["FCR"],
                 mode="lines",
                 name="FCR (€/MW/h)",
                 line=dict(color="#2ca02c", width=2),
@@ -552,8 +578,8 @@ with tab_reserves:
         )
         fig_res_hist.add_trace(
             go.Scatter(
-                x=df_res_hist["date"],
-                y=df_res_hist["aFRR_Up"],
+                x=df_res_hist_filtered["date"],
+                y=df_res_hist_filtered["aFRR_Up"],
                 mode="lines",
                 name="aFRR Up (€/MW/h)",
                 line=dict(color="#d62728", width=2),
@@ -561,8 +587,8 @@ with tab_reserves:
         )
         fig_res_hist.add_trace(
             go.Scatter(
-                x=df_res_hist["date"],
-                y=df_res_hist["aFRR_Down"],
+                x=df_res_hist_filtered["date"],
+                y=df_res_hist_filtered["aFRR_Down"],
                 mode="lines",
                 name="aFRR Down (€/MW/h)",
                 line=dict(color="#1f77b4", width=2),
@@ -570,15 +596,15 @@ with tab_reserves:
         )
         fig_res_hist.add_trace(
             go.Scatter(
-                x=df_res_hist["date"],
-                y=df_res_hist["mFRR_Up"],
+                x=df_res_hist_filtered["date"],
+                y=df_res_hist_filtered["mFRR_Up"],
                 mode="lines",
                 name="mFRR Up (€/MW/h)",
                 line=dict(color="#ff7f0e", width=1.5, dash="dot"),
             )
         )
         fig_res_hist.update_layout(
-            title="Sagedusreservide päeva keskmised hinnad (€/MW/h, alates 01.01.2026)",
+            title=f"Sagedusreservide päeva keskmised hinnad ({selected_period_label})",
             xaxis_title="Kuupäev",
             yaxis_title="Hind (€/MW/h)",
             xaxis_tickformat="%d.%m.%Y",
