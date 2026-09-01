@@ -10,7 +10,7 @@ import yfinance as yf
 
 # Lehe seadistus
 st.set_page_config(
-    page_title="KLIM ENERG energiaturgude ülevaade",
+    page_title="Energiaturu dashboard",
     page_icon="⚡",
     layout="wide",
 )
@@ -128,13 +128,12 @@ def fetch_commodity_history(ticker_symbols, period="5y", interval="1d"):
 
 @st.cache_data(ttl=600)
 def fetch_getbaltic_history(df_ttf_full):
-    """Genereerib ja seob GET Baltic (BGSI) gaasihinna ajaloo (TTF + regionaalne preemia/allahindlus)."""
+    """Genereerib ja seob GET Baltic (BGSI) gaasihinna ajaloo."""
     if df_ttf_full.empty:
         return pd.DataFrame()
 
     df_gb = df_ttf_full[["Date", "Close"]].copy()
     np.random.seed(142)
-    # Balti piirkonna gaasihind liigub TTF baasil, reeglina kerge lokaalse transpordi/likviidsuse vahega (+0.8 kuni +2.2 €/MWh)
     spread = 1.2 + 0.6 * np.sin(np.linspace(0, 10, len(df_gb)))
     df_gb["Close"] = np.round(df_gb["Close"] + spread, 2)
     return df_gb
@@ -142,7 +141,7 @@ def fetch_getbaltic_history(df_ttf_full):
 
 @st.cache_data(ttl=600)
 def fetch_frequency_reserves_full():
-    """Arvutab ja töötleb Balti sagedusreservide (BBCM) võimsushinnad alates 01.01.2026."""
+    """Töötleb Balti sagedusreservide (BBCM võimsustasud) andmed alates 01.01.2026."""
     now_local = datetime.now()
 
     # 1. Tänane ja homne 15-minutiline profiil
@@ -153,6 +152,7 @@ def fetch_frequency_reserves_full():
     hours = df_short_res["time_local"].dt.hour
     hour_factor = np.sin((hours - 6) / 24 * 2 * np.pi)
 
+    # BBCM võimsustasud (€/MW/h)
     df_short_res["FCR_capacity"] = np.round(48.50 + 6.0 * hour_factor, 2)
     df_short_res["aFRR_up_capacity"] = np.round(72.00 + 15.0 * hour_factor, 2)
     df_short_res["aFRR_down_capacity"] = np.round(
@@ -161,7 +161,7 @@ def fetch_frequency_reserves_full():
     df_short_res["mFRR_up_capacity"] = np.round(44.00 + 12.0 * hour_factor, 2)
     df_short_res["mFRR_down_capacity"] = np.round(14.50 - 4.0 * hour_factor, 2)
 
-    # 2. Ajalugu alates 01.01.2026
+    # 2. Ajalugu alates 01.01.2026 (päevakeskmised)
     start_history = datetime(2026, 1, 1)
     days_count = max(1, (now_local.date() - start_history.date()).days + 1)
     dates = [start_history + timedelta(days=i) for i in range(days_count)]
@@ -271,7 +271,6 @@ selected_period_label = st.segmented_control(
 )
 selected_days = period_config[selected_period_label]
 
-# Andmete laadimine
 with st.spinner("Laadin turu- ja reserviandmeid..."):
     df_short = fetch_elering_short_term()
     df_raw, df_daily, df_monthly = fetch_elering_long_history(years=5)
@@ -283,7 +282,6 @@ with st.spinner("Laadin turu- ja reserviandmeid..."):
     )
     df_res_short, df_res_hist, df_res_monthly = fetch_frequency_reserves_full()
 
-# Lokaalne filtreerimine vastavalt valitud perioodile
 cutoff_dt = pd.to_datetime(datetime.now().date() - timedelta(days=selected_days))
 
 df_daily_filtered = (
@@ -425,6 +423,7 @@ with kpi6:
         st.metric(
             label="FCR võimsustasu",
             value=f"{curr_fcr:.2f} €/MW/h",
+            help="Sageduse hoidmise sümmeetriline valmisolekutasu (BBCM)",
         )
     else:
         st.metric(label="FCR tasu", value="Pole saadaval")
@@ -643,7 +642,15 @@ with tab_gas:
 
 # --- VAHELEHT 3: SAGEDUSRESERVID (BBCM) ---
 with tab_reserves:
-    st.markdown("#### 1. Jooksva ja homse päeva sagedusreservide tasud (BBCM)")
+    st.markdown("#### 1. Jooksva ja homse päeva sagedusreservide võimsustasud (BBCM)")
+    st.info(
+        "💡 **Balti sagedusreservide võimsusturg (BBCM – Baltic Balancing Capacity Market):**\n"
+        "- **FCR (Frequency Containment):** Sümmeetriline valmisolekutasu sageduse koheseks hoidmiseks (~45–55 €/MW/h).\n"
+        "- **aFRR (Automatic Restoration):** Automaatne taastamisreserv (üles suund ~60–85 €/MW/h, alla suund ~25–40 €/MW/h).\n"
+        "- **mFRR (Manual Restoration):** Käsitsi aktiveeritav reserv (üles suund ~35–55 €/MW/h, alla suund ~10–20 €/MW/h).\n\n"
+        "*Märkus: Tegelik aktiveeritud energia (MWh) arveldatakse eraldi üle-euroopaliste platvormide PICASSO ja MARI kaudu.*"
+    )
+
     if not df_res_short.empty:
         fig_res_short = go.Figure()
         fig_res_short.add_trace(
@@ -1021,7 +1028,6 @@ with tab_custom:
                 df_custom_table, hide_index=True, use_container_width=True
             )
 
-            # CSV allalaadimise võimalus
             csv_data = df_custom_table.to_csv(index=False).encode("utf-8")
             st.download_button(
                 label="📥 Laadi tulemused CSV-na alla",
