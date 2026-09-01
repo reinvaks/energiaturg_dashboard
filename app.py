@@ -18,7 +18,6 @@ st.set_page_config(
 def fetch_elering_data():
     """Pärib Eleringi API-st tänase ja homse päeva elektri tunnihinnad (Eesti)."""
     now_utc = datetime.now(timezone.utc)
-    # Tänase algusest kuni homse lõpuni
     start = (now_utc - timedelta(days=0)).strftime("%Y-%m-%dT00:00:00.000Z")
     end = (now_utc + timedelta(days=1)).strftime("%Y-%m-%dT23:59:59.999Z")
 
@@ -83,9 +82,8 @@ selected_period = period_map[selected_period_label]
 df_elekter = fetch_elering_data()
 df_ttf = fetch_commodity_history("TTF=F", period=selected_period)
 df_brent = fetch_commodity_history("BZ=F", period=selected_period)
-df_co2 = fetch_commodity_history(
-    "KRBN", period=selected_period
-)  # KraneShares Global/EU Carbon
+# EU ETS süsinikukvoodi futuur (EUA=F), vajadusel alternatiiviks ICE EUA sümbol
+df_co2 = fetch_commodity_history("EUA=F", period=selected_period)
 
 # --- 1. MÕÕDIKUTE KAARDID (KPI) ---
 st.subheader("Hetketuru hinnatasemed")
@@ -147,7 +145,7 @@ with kpi3:
     else:
         st.metric(label="Brent toornafta", value="Pole saadaval")
 
-# CO2 kvoot (EUA)
+# EU ETS CO2 kvoot (EUA)
 with kpi4:
     if not df_co2.empty:
         last_co2 = df_co2["Close"].iloc[-1]
@@ -156,12 +154,12 @@ with kpi4:
         )
         delta_co2 = last_co2 - prev_co2
         st.metric(
-            label="CO2 kvoodi indeks (EUA)",
-            value=f"{last_co2:.2f} $/osak",
-            delta=f"{delta_co2:+.2f} $ (päev)",
+            label="EU ETS kvoot (EUA)",
+            value=f"{last_co2:.2f} €/tCO₂",
+            delta=f"{delta_co2:+.2f} € (päev)",
         )
     else:
-        st.metric(label="CO2 kvoot (EUA)", value="Pole saadaval")
+        st.metric(label="EU ETS kvoot (EUA)", value="Pole saadaval")
 
 st.divider()
 
@@ -170,13 +168,12 @@ tab_el, tab_gas, tab_oil, tab_co2 = st.tabs([
     "⚡ Elektri tunnihinnad (täna + homme)",
     "🔥 TTF Gaas",
     "🛢️ Brent Nafta",
-    "🌱 CO2 Heitmekvoot",
+    "🌱 EU ETS Heitmekvoot (EUA)",
 ])
 
 # Elektri graafik
 with tab_el:
     if not df_elekter.empty:
-        # Värvime tulbad: soodne (roheline/sinine), kallis (punakas)
         fig_el = px.bar(
             df_elekter,
             x="time_local",
@@ -189,7 +186,6 @@ with tab_el:
             },
             title="Nord Pool Eesti tunnihinnad (tänane ja homne)",
         )
-        # Lisame praeguse hetke eraldusjoone
         now_local = datetime.now(timezone.utc).astimezone(
             tz=df_elekter["time_local"].dt.tz
         )
@@ -206,7 +202,6 @@ with tab_el:
         )
         st.plotly_chart(fig_el, use_container_width=True)
 
-        # Statistika kokkuvõte
         col_s1, col_s2, col_s3 = st.columns(3)
         col_s1.info(f"**Päeva keskmine:** {df_elekter['price'].mean():.2f} €/MWh")
         col_s2.success(
@@ -248,17 +243,17 @@ with tab_oil:
     else:
         st.warning("Naftahindade laadimine ebaõnnestus.")
 
-# CO2
+# EU ETS EUA
 with tab_co2:
     if not df_co2.empty:
         fig_co2 = px.line(
             df_co2,
             x="Date",
             y="Close",
-            labels={"Date": "Kuupäev", "Close": "Indeksi väärtus ($)"},
-            title=f"CO2 heitmekvoodi trend ({selected_period_label})",
+            labels={"Date": "Kuupäev", "Close": "Hind (€/tCO₂)"},
+            title=f"EU ETS heitmekvoodi futuuri (EUA) sulgemishinnad ({selected_period_label})",
         )
         fig_co2.update_traces(line_color="#2E8B57")
         st.plotly_chart(fig_co2, use_container_width=True)
     else:
-        st.warning("CO2 kvoodi andmete laadimine ebaõnnestus.")
+        st.warning("EU ETS kvoodi andmete laadimine ebaõnnestus.")
