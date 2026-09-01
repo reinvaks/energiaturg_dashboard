@@ -1,7 +1,7 @@
-plaintext
-
-streamlit
-requests
-yfinance
-pandas
-plotly
+Plaintext
+streamlit>=1.30.0
+requests>=2.31.0
+pandas>=2.0.0
+plotly>=5.18.0
+yfinance>=0.2.35
+lxml>=5.0.0
