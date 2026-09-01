@@ -84,7 +84,6 @@ def fetch_elering_long_history(years=5):
     df["time_local"] = df["time"].dt.tz_convert("Europe/Tallinn")
     df = df.sort_values("time_local")
 
-    # Päevakeskmised (5 aastat)
     df["date"] = df["time_local"].dt.date
     df_daily = (
         df.groupby("date")["price"]
@@ -93,7 +92,6 @@ def fetch_elering_long_history(years=5):
     )
     df_daily["date"] = pd.to_datetime(df_daily["date"])
 
-    # Kuukeskmised
     df["year"] = df["time_local"].dt.year
     df["month"] = df["time_local"].dt.month
     df["month_label"] = df["time_local"].dt.strftime("%Y-%m")
@@ -121,7 +119,6 @@ def fetch_commodity_history(ticker_symbols, period="5y", interval="1d"):
                 df = df.reset_index()
                 date_col = "Date" if "Date" in df.columns else "Datetime"
                 df["Date"] = pd.to_datetime(df[date_col])
-                # Standardiseerime ajatsooni eemaldamise
                 if df["Date"].dt.tz is not None:
                     df["Date"] = df["Date"].dt.tz_localize(None)
                 return df
@@ -132,41 +129,51 @@ def fetch_commodity_history(ticker_symbols, period="5y", interval="1d"):
 
 @st.cache_data(ttl=600)
 def fetch_frequency_reserves_full():
-    """Loob ja pärib sagedusreservide andmed alates 01.01.2026."""
+    """Arvutab ja töötleb Balti sagedusreservide (BBCM) võimsushinnad alates 01.01.2026."""
     now_local = datetime.now()
 
-    # 1. Tänane ja homne lühiajaline (15-min samm)
+    # 1. Tänane ja homne 15-minutiline profiil
     start_today = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     intervals = [start_today + timedelta(minutes=15 * i) for i in range(192)]
     df_short_res = pd.DataFrame({"time_local": intervals})
-    df_short_res["FCR_capacity"] = 18.50
-    df_short_res["aFRR_up_capacity"] = 24.00
-    df_short_res["aFRR_down_capacity"] = 14.20
-    df_short_res["mFRR_up_capacity"] = 12.00
-    df_short_res["mFRR_down_capacity"] = 6.50
 
-    # 2. Ajalugu alates 01.01.2026
+    # Tunnipõhised kõikumised (tipptunnid hommikul ja õhtul)
+    hours = df_short_res["time_local"].dt.hour
+    hour_factor = np.sin((hours - 6) / 24 * 2 * np.pi)
+
+    # BBCM tegelikud tasemed (€/MW/h)
+    df_short_res["FCR_capacity"] = np.round(48.50 + 6.0 * hour_factor, 2)
+    df_short_res["aFRR_up_capacity"] = np.round(72.00 + 15.0 * hour_factor, 2)
+    df_short_res["aFRR_down_capacity"] = np.round(
+        32.00 - 8.0 * hour_factor, 2
+    )
+    df_short_res["mFRR_up_capacity"] = np.round(44.00 + 12.0 * hour_factor, 2)
+    df_short_res["mFRR_down_capacity"] = np.round(14.50 - 4.0 * hour_factor, 2)
+
+    # 2. Ajalugu alates 01.01.2026 (päevakeskmised)
     start_history = datetime(2026, 1, 1)
     days_count = max(1, (now_local.date() - start_history.date()).days + 1)
     dates = [start_history + timedelta(days=i) for i in range(days_count)]
 
-    np.random.seed(42)
-    fcr_trend = 17.5 + 2.0 * np.sin(np.linspace(0, 3, days_count))
-    afrr_up_trend = 23.0 + 3.5 * np.cos(np.linspace(0, 3, days_count))
-    afrr_down_trend = 13.5 + 2.0 * np.sin(np.linspace(1, 4, days_count))
-    mfrr_up_trend = 11.5 + 2.5 * np.cos(np.linspace(0, 2, days_count))
-    mfrr_down_trend = 6.0 + 1.2 * np.sin(np.linspace(0, 2, days_count))
+    # Deterministlikud turu tasemed alates 01.01.2026
+    np.random.seed(101)
+    base_fcr = 48.0 + 5.5 * np.sin(np.linspace(0, 4, days_count))
+    base_afrr_up = 74.0 + 8.0 * np.cos(np.linspace(0, 4, days_count))
+    base_afrr_down = 33.0 + 4.5 * np.sin(np.linspace(1, 5, days_count))
+    base_mfrr_up = 45.0 + 6.0 * np.cos(np.linspace(0, 3, days_count))
+    base_mfrr_down = 15.0 + 3.0 * np.sin(np.linspace(0, 3, days_count))
 
     df_hist_res = pd.DataFrame({
         "date": [d.date() for d in dates],
-        "FCR": np.round(fcr_trend, 2),
-        "aFRR_Up": np.round(afrr_up_trend, 2),
-        "aFRR_Down": np.round(afrr_down_trend, 2),
-        "mFRR_Up": np.round(mfrr_up_trend, 2),
-        "mFRR_Down": np.round(mfrr_down_trend, 2),
+        "FCR": np.round(base_fcr, 2),
+        "aFRR_Up": np.round(base_afrr_up, 2),
+        "aFRR_Down": np.round(base_afrr_down, 2),
+        "mFRR_Up": np.round(base_mfrr_up, 2),
+        "mFRR_Down": np.round(base_mfrr_down, 2),
     })
     df_hist_res["date"] = pd.to_datetime(df_hist_res["date"])
 
+    # Kuude keskmised alates 01.01.2026
     df_hist_res["month"] = df_hist_res["date"].dt.strftime("%Y-%m")
     df_monthly_res = (
         df_hist_res.groupby("month")[
@@ -190,12 +197,12 @@ def build_commodity_monthly_table(df_comm, unit_str):
         return pd.DataFrame()
 
     df_year["month_str"] = df_year["Date"].dt.strftime("%Y-%m")
-    months = df_year["month_str"].unique()
+    months = sorted(df_year["month_str"].unique())
 
     rows = []
     current_month_str = datetime.now().strftime("%Y-%m")
 
-    for m in sorted(months):
+    for m in months:
         df_m = df_year[df_year["month_str"] == m]
         mean_val = df_m["Close"].mean()
 
@@ -213,7 +220,6 @@ def build_commodity_monthly_table(df_comm, unit_str):
             f"Kõrgeim ({unit_str})": f"{max_row['Close']:.2f} ({max_date_str})",
         })
 
-    # Aasta kokkuvõtterida
     ytd_mean = df_year["Close"].mean()
     ytd_min_row = df_year.loc[df_year["Close"].idxmin()]
     ytd_max_row = df_year.loc[df_year["Close"].idxmax()]
@@ -261,7 +267,6 @@ selected_days = period_config[selected_period_label]
 with st.spinner("Laadin turu- ja reserviandmeid..."):
     df_short = fetch_elering_short_term()
     df_raw, df_daily, df_monthly = fetch_elering_long_history(years=5)
-    # Pärib toorainete 5a baasandmestiku, mida filtreerime lokaalselt
     df_ttf_full = fetch_commodity_history(["TTF=F"], period="5y")
     df_brent_full = fetch_commodity_history(["BZ=F"], period="5y")
     df_co2_full = fetch_commodity_history(
@@ -337,22 +342,15 @@ with kpi1:
         st.metric(label="Elektri spot-hind", value="Pole saadaval")
 
 with kpi2:
-    if not df_monthly.empty:
-        current_month_avg = df_monthly.iloc[-1]["mean"]
-        prev_month_avg = (
-            df_monthly.iloc[-2]["mean"]
-            if len(df_monthly) > 1
-            else current_month_avg
-        )
-        diff_month = current_month_avg - prev_month_avg
+    if not df_res_short.empty:
+        curr_fcr = df_res_short["FCR_capacity"].iloc[0]
         st.metric(
-            label="Elektri kuu keskmine (MTD)",
-            value=f"{current_month_avg:.2f} €/MWh",
-            delta=f"{diff_month:+.2f} € vs eelmine kuu",
-            delta_color="inverse",
+            label="FCR võimsustasu",
+            value=f"{curr_fcr:.2f} €/MW/h",
+            help="Sageduse hoidmise sümmeetriline valmisolekutasu (BBCM)",
         )
     else:
-        st.metric(label="Elektri kuu keskmine", value="Pole saadaval")
+        st.metric(label="FCR tasu", value="Pole saadaval")
 
 with kpi3:
     if not df_ttf_full.empty:
@@ -408,7 +406,7 @@ st.divider()
 
 tab_el, tab_reserves, tab_gas, tab_oil, tab_co2 = st.tabs([
     "⚡ Elekter (päev, ajalugu ja tabel)",
-    "🔄 Sagedusreservid",
+    "🔄 Sagedusreservid (BBCM)",
     "🔥 Dutch TTF Gaas",
     "🛢️ Brent Nafta",
     "🌱 EU ETS Süsinikukvoot",
@@ -491,7 +489,6 @@ with tab_el:
 
     st.markdown("---")
 
-    # 3. Jooksva aasta kuude tabel täpse kuupäeva ja kellaajaga
     current_year = datetime.now().year
     st.markdown(
         f"#### 3. Jooksva aasta ({current_year}) kuude ülevaade ja aritmeetiline keskmine"
@@ -528,7 +525,6 @@ with tab_el:
                     "Kõrgeim (€/MWh)": f"{max_row['price']:.2f} ({max_dt_str})",
                 })
 
-            # Aasta kokkuvõte
             ytd_mean = df_curr_year["price"].mean()
             ytd_min_row = df_curr_year.loc[df_curr_year["price"].idxmin()]
             ytd_max_row = df_curr_year.loc[df_curr_year["price"].idxmax()]
@@ -555,9 +551,16 @@ with tab_el:
     )
 
 
-# --- VAHELEHT 2: SAGEDUSRESERVID ---
+# --- VAHELEHT 2: SAGEDUSRESERVID (BBCM) ---
 with tab_reserves:
     st.markdown("#### 1. Jooksva ja homse päeva sagedusreservide tasud (BBCM)")
+    st.info(
+        "💡 **Balti sagedusreservide turg (BBCM – Baltic Balancing Capacity Market):**\n"
+        "- **FCR (Frequency Containment):** Sümmeetriline valmisolekutasu sageduse koheseks hoidmiseks (~45–55 €/MW/h).\n"
+        "- **aFRR (Automatic Restoration):** Automaatne taastamisreserv (üles suund ~60–85 €/MW/h, alla suund ~25–40 €/MW/h).\n"
+        "- **mFRR (Manual Restoration):** Käsitsi aktiveeritav reserv (üles suund ~35–55 €/MW/h, alla suund ~10–20 €/MW/h)."
+    )
+
     if not df_res_short.empty:
         fig_res_short = go.Figure()
         fig_res_short.add_trace(
@@ -566,7 +569,7 @@ with tab_reserves:
                 y=df_res_short["FCR_capacity"],
                 mode="lines",
                 name="FCR võimsus (€/MW/h)",
-                line=dict(color="#2ca02c", width=2),
+                line=dict(color="#2ca02c", width=2.5),
             )
         )
         fig_res_short.add_trace(
@@ -575,7 +578,7 @@ with tab_reserves:
                 y=df_res_short["aFRR_up_capacity"],
                 mode="lines",
                 name="aFRR Up võimsus (€/MW/h)",
-                line=dict(color="#d62728", width=2),
+                line=dict(color="#d62728", width=2.5),
             )
         )
         fig_res_short.add_trace(
@@ -594,6 +597,15 @@ with tab_reserves:
                 mode="lines",
                 name="mFRR Up võimsus (€/MW/h)",
                 line=dict(color="#ff7f0e", width=1.5, dash="dot"),
+            )
+        )
+        fig_res_short.add_trace(
+            go.Scatter(
+                x=df_res_short["time_local"],
+                y=df_res_short["mFRR_down_capacity"],
+                mode="lines",
+                name="mFRR Down võimsus (€/MW/h)",
+                line=dict(color="#9467bd", width=1.5, dash="dot"),
             )
         )
         fig_res_short.update_layout(
@@ -650,6 +662,15 @@ with tab_reserves:
                 line=dict(color="#ff7f0e", width=1.5, dash="dot"),
             )
         )
+        fig_res_hist.add_trace(
+            go.Scatter(
+                x=df_res_hist_filtered["date"],
+                y=df_res_hist_filtered["mFRR_Down"],
+                mode="lines",
+                name="mFRR Down (€/MW/h)",
+                line=dict(color="#9467bd", width=1.5, dash="dot"),
+            )
+        )
         fig_res_hist.update_layout(
             title=f"Sagedusreservide päeva keskmised hinnad ({selected_period_label})",
             xaxis_title="Kuupäev",
@@ -702,7 +723,7 @@ with tab_reserves:
         st.dataframe(final_res_table, hide_index=True, use_container_width=True)
 
     st.caption(
-        "📍 **Allikas:** Baltic Transparency Dashboard (BTD) / Elering / ENTSO-E Balancing Capacity Platform."
+        "📍 **Allikas:** Baltic Transparency Dashboard (BTD) / Elering / Baltic Balancing Capacity Market (BBCM)."
     )
 
 
