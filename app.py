@@ -1,6 +1,7 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 import yfinance as yf
@@ -15,10 +16,11 @@ st.set_page_config(
 
 @st.cache_data(ttl=300)
 def fetch_elering_data():
-    """Pärib Eleringi API-st tänase päeva tunnihinnad."""
+    """Pärib Eleringi API-st tänase ja homse päeva elektri tunnihinnad (Eesti)."""
     now_utc = datetime.now(timezone.utc)
-    start = now_utc.strftime("%Y-%m-%dT00:00:00.000Z")
-    end = now_utc.strftime("%Y-%m-%dT23:59:59.999Z")
+    # Tänase algusest kuni homse lõpuni
+    start = (now_utc - timedelta(days=0)).strftime("%Y-%m-%dT00:00:00.000Z")
+    end = (now_utc + timedelta(days=1)).strftime("%Y-%m-%dT23:59:59.999Z")
 
     url = f"https://dashboard.elering.ee/api/nps/price?start={start}&end={end}"
     try:
@@ -38,14 +40,13 @@ def fetch_elering_data():
 
 
 @st.cache_data(ttl=900)
-def fetch_commodity_history(ticker_symbol, period="1mo", interval="1d"):
-    """Pärib toorainete ajaloo Yahoo Finance'ist."""
+def fetch_commodity_history(ticker_symbol, period="1y", interval="1d"):
+    """Pärib finantsturgude ajaloo Yahoo Finance'ist."""
     try:
         ticker = yf.Ticker(ticker_symbol)
         df = ticker.history(period=period, interval=interval)
         if not df.empty:
             df = df.reset_index()
-            # Standardiseerime kuupäeva veeru nime
             date_col = "Date" if "Date" in df.columns else "Datetime"
             df["Date"] = pd.to_datetime(df[date_col])
             return df
@@ -54,23 +55,41 @@ def fetch_commodity_history(ticker_symbol, period="1mo", interval="1d"):
         return pd.DataFrame()
 
 
-# Pealkiri ja värskendusnupp
+# Päise riba
 col_title, col_btn = st.columns([5, 1])
 with col_title:
-    st.title("Energiaturu reaalaja ülevaade")
+    st.title("Energiaturu reaalaja armatuurlaud")
 with col_btn:
-    if st.button("Värskenda andmeid"):
+    if st.button("🔄 Värskenda"):
         st.cache_data.clear()
         st.rerun()
 
+# Perioodi valik ajaloo graafikute jaoks
+period_map = {
+    "1 nädal": "7d",
+    "1 kuu": "1mo",
+    "3 kuud": "3mo",
+    "6 kuud": "6mo",
+    "12 kuud": "1y",
+}
+selected_period_label = st.segmented_control(
+    "Ajaloo periood:",
+    options=list(period_map.keys()),
+    default="12 kuud",
+)
+selected_period = period_map[selected_period_label]
+
 # Andmete laadimine
 df_elekter = fetch_elering_data()
-df_ttf = fetch_commodity_history("TTF=F", period="1mo")
-df_brent = fetch_commodity_history("BZ=F", period="1mo")
+df_ttf = fetch_commodity_history("TTF=F", period=selected_period)
+df_brent = fetch_commodity_history("BZ=F", period=selected_period)
+df_co2 = fetch_commodity_history(
+    "KRBN", period=selected_period
+)  # KraneShares Global/EU Carbon
 
-# 1. Hetkehindade mõõdikud (KPI kaardid)
+# --- 1. MÕÕDIKUTE KAARDID (KPI) ---
 st.subheader("Hetketuru hinnatasemed")
-kpi1, kpi2, kpi3 = st.columns(3)
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
 # Elektri jooksev hind
 current_el_price = None
@@ -107,7 +126,7 @@ with kpi2:
         st.metric(
             label="Dutch TTF maagaas",
             value=f"{last_ttf:.2f} €/MWh",
-            delta=f"{delta_ttf:+.2f} €",
+            delta=f"{delta_ttf:+.2f} € (päev)",
         )
     else:
         st.metric(label="Dutch TTF maagaas", value="Pole saadaval")
@@ -123,54 +142,123 @@ with kpi3:
         st.metric(
             label="Brent toornafta",
             value=f"{last_brent:.2f} $/bbl",
-            delta=f"{delta_brent:+.2f} $",
+            delta=f"{delta_brent:+.2f} $ (päev)",
         )
     else:
         st.metric(label="Brent toornafta", value="Pole saadaval")
 
+# CO2 kvoot (EUA)
+with kpi4:
+    if not df_co2.empty:
+        last_co2 = df_co2["Close"].iloc[-1]
+        prev_co2 = (
+            df_co2["Close"].iloc[-2] if len(df_co2) > 1 else last_co2
+        )
+        delta_co2 = last_co2 - prev_co2
+        st.metric(
+            label="CO2 kvoodi indeks (EUA)",
+            value=f"{last_co2:.2f} $/osak",
+            delta=f"{delta_co2:+.2f} $ (päev)",
+        )
+    else:
+        st.metric(label="CO2 kvoot (EUA)", value="Pole saadaval")
+
 st.divider()
 
-# 2. Graafikud
-tab1, tab2, tab3 = st.tabs(
-    ["Elektri tunnihinnad (täna)", "TTF Gaas (1 kuu)", "Brent Nafta (1 kuu)"]
-)
+# --- 2. GRAAFIKUD ---
+tab_el, tab_gas, tab_oil, tab_co2 = st.tabs([
+    "⚡ Elektri tunnihinnad (täna + homme)",
+    "🔥 TTF Gaas",
+    "🛢️ Brent Nafta",
+    "🌱 CO2 Heitmekvoot",
+])
 
-with tab1:
+# Elektri graafik
+with tab_el:
     if not df_elekter.empty:
+        # Värvime tulbad: soodne (roheline/sinine), kallis (punakas)
         fig_el = px.bar(
             df_elekter,
             x="time_local",
             y="price",
-            labels={"time_local": "Kellaaeg", "price": "Hind (€/MWh)"},
-            title="Nord Pool Eesti päeva tunnihinnad",
+            color="price",
+            color_continuous_scale="Turbo",
+            labels={
+                "time_local": "Aeg (Eesti kohalik)",
+                "price": "Hind (€/MWh)",
+            },
+            title="Nord Pool Eesti tunnihinnad (tänane ja homne)",
         )
-        fig_el.update_layout(xaxis_tickformat="%H:%M")
+        # Lisame praeguse hetke eraldusjoone
+        now_local = datetime.now(timezone.utc).astimezone(
+            tz=df_elekter["time_local"].dt.tz
+        )
+        fig_el.add_vline(
+            x=now_local,
+            line_width=2,
+            line_dash="dash",
+            line_color="red",
+            annotation_text="Praegu",
+            annotation_position="top left",
+        )
+        fig_el.update_layout(
+            xaxis_tickformat="%d.%m %H:%M", coloraxis_showscale=False
+        )
         st.plotly_chart(fig_el, use_container_width=True)
-    else:
-        st.warning("Elektri tunnihindade laadimine ebaõnnestus.")
 
-with tab2:
+        # Statistika kokkuvõte
+        col_s1, col_s2, col_s3 = st.columns(3)
+        col_s1.info(f"**Päeva keskmine:** {df_elekter['price'].mean():.2f} €/MWh")
+        col_s2.success(
+            f"**Madalaim tund:** {df_elekter['price'].min():.2f} €/MWh"
+        )
+        col_s3.error(
+            f"**Kõrgeim tund:** {df_elekter['price'].max():.2f} €/MWh"
+        )
+    else:
+        st.warning("Elektrihindade laadimine ebaõnnestus.")
+
+# TTF Gaas
+with tab_gas:
     if not df_ttf.empty:
-        fig_ttf = px.line(
+        fig_ttf = px.area(
             df_ttf,
             x="Date",
             y="Close",
             labels={"Date": "Kuupäev", "Close": "Hind (€/MWh)"},
-            title="Dutch TTF maagaasi futuuri sulgemishinnad (viimane kuu)",
+            title=f"Dutch TTF maagaasi futuur ({selected_period_label})",
         )
+        fig_ttf.update_traces(line_color="#FF8C00")
         st.plotly_chart(fig_ttf, use_container_width=True)
     else:
-        st.warning("Gaasihindade ajaloo laadimine ebaõnnestus.")
+        st.warning("Gaasihindade laadimine ebaõnnestus.")
 
-with tab3:
+# Brent Nafta
+with tab_oil:
     if not df_brent.empty:
-        fig_brent = px.line(
+        fig_brent = px.area(
             df_brent,
             x="Date",
             y="Close",
-            labels={"Date": "Kuupäev", "Close": "Hind ($/barrel)"},
-            title="Brent toornafta sulgemishinnad (viimane kuu)",
+            labels={"Date": "Kuupäev", "Close": "Hind ($/bbl)"},
+            title=f"Brent toornafta sulgemishinnad ({selected_period_label})",
         )
+        fig_brent.update_traces(line_color="#1E90FF")
         st.plotly_chart(fig_brent, use_container_width=True)
     else:
-        st.warning("Naftahindade ajaloo laadimine ebaõnnestus.")
+        st.warning("Naftahindade laadimine ebaõnnestus.")
+
+# CO2
+with tab_co2:
+    if not df_co2.empty:
+        fig_co2 = px.line(
+            df_co2,
+            x="Date",
+            y="Close",
+            labels={"Date": "Kuupäev", "Close": "Indeksi väärtus ($)"},
+            title=f"CO2 heitmekvoodi trend ({selected_period_label})",
+        )
+        fig_co2.update_traces(line_color="#2E8B57")
+        st.plotly_chart(fig_co2, use_container_width=True)
+    else:
+        st.warning("CO2 kvoodi andmete laadimine ebaõnnestus.")
