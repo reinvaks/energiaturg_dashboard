@@ -10,7 +10,7 @@ import yfinance as yf
 
 # Lehe seadistus
 st.set_page_config(
-    page_title="Energiaturu ja reservide armatuurlaud",
+    page_title="Energiaturu dashboard",
     page_icon="⚡",
     layout="wide",
 )
