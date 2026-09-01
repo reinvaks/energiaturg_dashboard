@@ -16,7 +16,7 @@ st.set_page_config(
 )
 
 
-# --- 1. ANDMETE PÄRIMISE FUNKTSIOONID ---
+# --- 1. ANDMETE PÄRIMISE JA TÖÖTLEMISE FUNKTSIOONID ---
 
 
 @st.cache_data(ttl=180)
@@ -108,7 +108,7 @@ def fetch_elering_long_history(years=5):
 
 
 @st.cache_data(ttl=900)
-def fetch_commodity_history(ticker_symbols, period="1y", interval="1d"):
+def fetch_commodity_history(ticker_symbols, period="5y", interval="1d"):
     """Pärib finantsturgude ajaloo Yahoo Finance'ist."""
     if isinstance(ticker_symbols, str):
         ticker_symbols = [ticker_symbols]
@@ -121,6 +121,9 @@ def fetch_commodity_history(ticker_symbols, period="1y", interval="1d"):
                 df = df.reset_index()
                 date_col = "Date" if "Date" in df.columns else "Datetime"
                 df["Date"] = pd.to_datetime(df[date_col])
+                # Standardiseerime ajatsooni eemaldamise
+                if df["Date"].dt.tz is not None:
+                    df["Date"] = df["Date"].dt.tz_localize(None)
                 return df
         except Exception:
             continue
@@ -176,6 +179,58 @@ def fetch_frequency_reserves_full():
     return df_short_res, df_hist_res, df_monthly_res
 
 
+def build_commodity_monthly_table(df_comm, unit_str):
+    """Koostab toorainele jooksva aasta kuude kokkuvõttetabeli koos kuupäevadega."""
+    if df_comm.empty:
+        return pd.DataFrame()
+
+    current_year = datetime.now().year
+    df_year = df_comm[df_comm["Date"].dt.year == current_year].copy()
+    if df_year.empty:
+        return pd.DataFrame()
+
+    df_year["month_str"] = df_year["Date"].dt.strftime("%Y-%m")
+    months = df_year["month_str"].unique()
+
+    rows = []
+    current_month_str = datetime.now().strftime("%Y-%m")
+
+    for m in sorted(months):
+        df_m = df_year[df_year["month_str"] == m]
+        mean_val = df_m["Close"].mean()
+
+        min_row = df_m.loc[df_m["Close"].idxmin()]
+        max_row = df_m.loc[df_m["Close"].idxmax()]
+
+        min_date_str = min_row["Date"].strftime("%d.%m")
+        max_date_str = max_row["Date"].strftime("%d.%m")
+
+        label = f"{m} (jooksev kuu)" if m == current_month_str else m
+        rows.append({
+            "Periood": label,
+            f"Keskmine ({unit_str})": f"{mean_val:.2f}",
+            f"Madalaim ({unit_str})": f"{min_row['Close']:.2f} ({min_date_str})",
+            f"Kõrgeim ({unit_str})": f"{max_row['Close']:.2f} ({max_date_str})",
+        })
+
+    # Aasta kokkuvõtterida
+    ytd_mean = df_year["Close"].mean()
+    ytd_min_row = df_year.loc[df_year["Close"].idxmin()]
+    ytd_max_row = df_year.loc[df_year["Close"].idxmax()]
+
+    ytd_min_date = ytd_min_row["Date"].strftime("%d.%m")
+    ytd_max_date = ytd_max_row["Date"].strftime("%d.%m")
+
+    rows.append({
+        "Periood": f"⭐ AASTA {current_year} KESKMINE (YTD)",
+        f"Keskmine ({unit_str})": f"{ytd_mean:.2f}",
+        f"Madalaim ({unit_str})": f"{ytd_min_row['Close']:.2f} ({ytd_min_date})",
+        f"Kõrgeim ({unit_str})": f"{ytd_max_row['Close']:.2f} ({ytd_max_date})",
+    })
+
+    return pd.DataFrame(rows)
+
+
 # --- 2. PÄIS JA ÜHTNE PERIOODIVALIK ---
 
 col_title, col_btn = st.columns([5, 1])
@@ -186,14 +241,13 @@ with col_btn:
         st.cache_data.clear()
         st.rerun()
 
-# Perioodide seos päevade arvuga
 period_config = {
-    "1 nädal": {"yf": "7d", "days": 7},
-    "1 kuu": {"yf": "1mo", "days": 30},
-    "3 kuud": {"yf": "3mo", "days": 90},
-    "6 kuud": {"yf": "6mo", "days": 180},
-    "12 kuud": {"yf": "1y", "days": 365},
-    "5 aastat": {"yf": "5y", "days": 365 * 5},
+    "1 nädal": 7,
+    "1 kuu": 30,
+    "3 kuud": 90,
+    "6 kuud": 180,
+    "12 kuud": 365,
+    "5 aastat": 365 * 5,
 }
 
 selected_period_label = st.segmented_control(
@@ -201,37 +255,48 @@ selected_period_label = st.segmented_control(
     options=list(period_config.keys()),
     default="12 kuud",
 )
-selected_yf_period = period_config[selected_period_label]["yf"]
-selected_days = period_config[selected_period_label]["days"]
+selected_days = period_config[selected_period_label]
 
 # Andmete laadimine
 with st.spinner("Laadin turu- ja reserviandmeid..."):
     df_short = fetch_elering_short_term()
     df_raw, df_daily, df_monthly = fetch_elering_long_history(years=5)
-    df_ttf = fetch_commodity_history(["TTF=F"], period=selected_yf_period)
-    df_brent = fetch_commodity_history(["BZ=F"], period=selected_yf_period)
-    df_co2 = fetch_commodity_history(
-        ["CO2.L", "CARB.L", "KEUA"], period=selected_yf_period
+    # Pärib toorainete 5a baasandmestiku, mida filtreerime lokaalselt
+    df_ttf_full = fetch_commodity_history(["TTF=F"], period="5y")
+    df_brent_full = fetch_commodity_history(["BZ=F"], period="5y")
+    df_co2_full = fetch_commodity_history(
+        ["CO2.L", "CARB.L", "KEUA"], period="5y"
     )
     df_res_short, df_res_hist, df_res_monthly = fetch_frequency_reserves_full()
 
-# Filtreerime elektri pikaajalise päevaandmestiku vastavalt valitud perioodile
-if not df_daily.empty:
-    cutoff_date = pd.to_datetime(
-        datetime.now().date() - timedelta(days=selected_days)
-    )
-    df_daily_filtered = df_daily[df_daily["date"] >= cutoff_date]
-else:
-    df_daily_filtered = pd.DataFrame()
+# Lokaalne filtreerimine vastavalt valitud perioodile
+cutoff_dt = pd.to_datetime(datetime.now().date() - timedelta(days=selected_days))
 
-# Filtreerime sagedusreservide ajaloo vastavalt valitud perioodile
-if not df_res_hist.empty:
-    cutoff_res = pd.to_datetime(
-        datetime.now().date() - timedelta(days=selected_days)
-    )
-    df_res_hist_filtered = df_res_hist[df_res_hist["date"] >= cutoff_res]
-else:
-    df_res_hist_filtered = pd.DataFrame()
+df_daily_filtered = (
+    df_daily[df_daily["date"] >= cutoff_dt]
+    if not df_daily.empty
+    else pd.DataFrame()
+)
+df_ttf_filtered = (
+    df_ttf_full[df_ttf_full["Date"] >= cutoff_dt]
+    if not df_ttf_full.empty
+    else pd.DataFrame()
+)
+df_brent_filtered = (
+    df_brent_full[df_brent_full["Date"] >= cutoff_dt]
+    if not df_brent_full.empty
+    else pd.DataFrame()
+)
+df_co2_filtered = (
+    df_co2_full[df_co2_full["Date"] >= cutoff_dt]
+    if not df_co2_full.empty
+    else pd.DataFrame()
+)
+df_res_hist_filtered = (
+    df_res_hist[df_res_hist["date"] >= cutoff_dt]
+    if not df_res_hist.empty
+    else pd.DataFrame()
+)
 
 interval_seconds = 3600
 if len(df_short) > 1:
@@ -290,10 +355,10 @@ with kpi2:
         st.metric(label="Elektri kuu keskmine", value="Pole saadaval")
 
 with kpi3:
-    if not df_ttf.empty:
-        last_ttf = df_ttf["Close"].iloc[-1]
+    if not df_ttf_full.empty:
+        last_ttf = df_ttf_full["Close"].iloc[-1]
         prev_ttf = (
-            df_ttf["Close"].iloc[-2] if len(df_ttf) > 1 else last_ttf
+            df_ttf_full["Close"].iloc[-2] if len(df_ttf_full) > 1 else last_ttf
         )
         delta_ttf = last_ttf - prev_ttf
         st.metric(
@@ -305,10 +370,12 @@ with kpi3:
         st.metric(label="Dutch TTF maagaas", value="Pole saadaval")
 
 with kpi4:
-    if not df_brent.empty:
-        last_brent = df_brent["Close"].iloc[-1]
+    if not df_brent_full.empty:
+        last_brent = df_brent_full["Close"].iloc[-1]
         prev_brent = (
-            df_brent["Close"].iloc[-2] if len(df_brent) > 1 else last_brent
+            df_brent_full["Close"].iloc[-2]
+            if len(df_brent_full) > 1
+            else last_brent
         )
         delta_brent = last_brent - prev_brent
         st.metric(
@@ -320,10 +387,10 @@ with kpi4:
         st.metric(label="Brent toornafta", value="Pole saadaval")
 
 with kpi5:
-    if not df_co2.empty:
-        last_co2 = df_co2["Close"].iloc[-1]
+    if not df_co2_full.empty:
+        last_co2 = df_co2_full["Close"].iloc[-1]
         prev_co2 = (
-            df_co2["Close"].iloc[-2] if len(df_co2) > 1 else last_co2
+            df_co2_full["Close"].iloc[-2] if len(df_co2_full) > 1 else last_co2
         )
         delta_co2 = last_co2 - prev_co2
         st.metric(
@@ -406,7 +473,6 @@ with tab_el:
 
     st.markdown("---")
 
-    # 2. Elektri ajalooline graafik vastavalt valitud perioodile
     st.markdown(
         f"#### 2. Eesti hinnapiirkonna päeva keskmised hinnad ({selected_period_label})"
     )
@@ -425,79 +491,61 @@ with tab_el:
 
     st.markdown("---")
 
-    # 3. Jooksva aasta kuude tabel
+    # 3. Jooksva aasta kuude tabel täpse kuupäeva ja kellaajaga
     current_year = datetime.now().year
     st.markdown(
         f"#### 3. Jooksva aasta ({current_year}) kuude ülevaade ja aritmeetiline keskmine"
     )
 
     if not df_raw.empty:
-        df_curr_year = df_raw[df_raw["time_local"].dt.year == current_year]
+        df_curr_year = df_raw[df_raw["time_local"].dt.year == current_year].copy()
 
         if not df_curr_year.empty:
-            df_year_monthly = (
-                df_curr_year.groupby(
-                    df_curr_year["time_local"].dt.strftime("%Y-%m")
-                )["price"]
-                .agg(mean="mean", min="min", max="max")
-                .reset_index()
-            )
-            df_year_monthly.columns = [
-                "Periood",
-                "Keskmine (€/MWh)",
-                "Madalaim (€/MWh)",
-                "Kõrgeim (€/MWh)",
-            ]
-            df_year_monthly["Keskmine (s/kWh)"] = (
-                df_year_monthly["Keskmine (€/MWh)"] / 10
-            )
+            df_curr_year["month_str"] = df_curr_year[
+                "time_local"
+            ].dt.strftime("%Y-%m")
+            months = sorted(df_curr_year["month_str"].unique())
 
+            el_rows = []
             current_month_str = datetime.now().strftime("%Y-%m")
-            df_year_monthly["Periood"] = df_year_monthly["Periood"].apply(
-                lambda x: f"{x} (jooksev kuu)"
-                if x == current_month_str
-                else f"{x}"
-            )
 
+            for m in months:
+                df_m = df_curr_year[df_curr_year["month_str"] == m]
+                mean_val = df_m["price"].mean()
+
+                min_row = df_m.loc[df_m["price"].idxmin()]
+                max_row = df_m.loc[df_m["price"].idxmax()]
+
+                min_dt_str = min_row["time_local"].strftime("%d.%m kell %H:%M")
+                max_dt_str = max_row["time_local"].strftime("%d.%m kell %H:%M")
+
+                label = f"{m} (jooksev kuu)" if m == current_month_str else m
+                el_rows.append({
+                    "Periood": label,
+                    "Keskmine (€/MWh)": f"{mean_val:.2f}",
+                    "Keskmine (s/kWh)": f"{(mean_val/10):.2f}",
+                    "Madalaim (€/MWh)": f"{min_row['price']:.2f} ({min_dt_str})",
+                    "Kõrgeim (€/MWh)": f"{max_row['price']:.2f} ({max_dt_str})",
+                })
+
+            # Aasta kokkuvõte
             ytd_mean = df_curr_year["price"].mean()
-            ytd_min = df_curr_year["price"].min()
-            ytd_max = df_curr_year["price"].max()
+            ytd_min_row = df_curr_year.loc[df_curr_year["price"].idxmin()]
+            ytd_max_row = df_curr_year.loc[df_curr_year["price"].idxmax()]
 
-            summary_row = pd.DataFrame([{
+            ytd_min_dt = ytd_min_row["time_local"].strftime("%d.%m kell %H:%M")
+            ytd_max_dt = ytd_max_row["time_local"].strftime("%d.%m kell %H:%M")
+
+            el_rows.append({
                 "Periood": f"⭐ AASTA {current_year} KESKMINE (YTD)",
-                "Keskmine (€/MWh)": ytd_mean,
-                "Madalaim (€/MWh)": ytd_min,
-                "Kõrgeim (€/MWh)": ytd_max,
-                "Keskmine (s/kWh)": ytd_mean / 10,
-            }])
-
-            final_table = pd.concat([df_year_monthly, summary_row], ignore_index=True)
-
-            final_table["Keskmine (€/MWh)"] = final_table[
-                "Keskmine (€/MWh)"
-            ].apply(lambda x: f"{x:.2f}")
-            final_table["Keskmine (s/kWh)"] = final_table[
-                "Keskmine (s/kWh)"
-            ].apply(lambda x: f"{x:.2f}")
-            final_table["Madalaim (€/MWh)"] = final_table[
-                "Madalaim (€/MWh)"
-            ].apply(lambda x: f"{x:.2f}")
-            final_table["Kõrgeim (€/MWh)"] = final_table[
-                "Kõrgeim (€/MWh)"
-            ].apply(lambda x: f"{x:.2f}")
+                "Keskmine (€/MWh)": f"{ytd_mean:.2f}",
+                "Keskmine (s/kWh)": f"{(ytd_mean/10):.2f}",
+                "Madalaim (€/MWh)": f"{ytd_min_row['price']:.2f} ({ytd_min_dt})",
+                "Kõrgeim (€/MWh)": f"{ytd_max_row['price']:.2f} ({ytd_max_dt})",
+            })
 
             st.dataframe(
-                final_table[
-                    [
-                        "Periood",
-                        "Keskmine (€/MWh)",
-                        "Keskmine (s/kWh)",
-                        "Madalaim (€/MWh)",
-                        "Kõrgeim (€/MWh)",
-                    ]
-                ],
-                hide_index=True,
-                use_container_width=True,
+                pd.DataFrame(el_rows), hide_index=True, use_container_width=True
             )
         else:
             st.info(f"Aasta {current_year} andmed pole veel kättesaadavad.")
@@ -561,7 +609,6 @@ with tab_reserves:
 
     st.markdown("---")
 
-    # 2. Sagedusreservide ajalooline graafik filtreeritud perioodiga
     st.markdown(
         f"#### 2. Sagedusreservide hindade ajalugu ({selected_period_label})"
     )
@@ -616,7 +663,6 @@ with tab_reserves:
 
     st.markdown("---")
 
-    # 3. Sagedusreservide kuude kokkuvõttetabel alates 01.01.2026
     st.markdown("#### 3. Sagedusreservide kuude keskmised hinnad alates 01.01.2026 (€/MW/h)")
     if not df_res_monthly.empty:
         df_res_table = df_res_monthly.copy()
@@ -662,9 +708,9 @@ with tab_reserves:
 
 # --- VAHELEHT 3: DUTCH TTF MAAGAAS ---
 with tab_gas:
-    if not df_ttf.empty:
+    if not df_ttf_filtered.empty:
         fig_ttf = px.area(
-            df_ttf,
+            df_ttf_filtered,
             x="Date",
             y="Close",
             labels={"Date": "Kuupäev", "Close": "Hind (€/MWh)"},
@@ -672,6 +718,16 @@ with tab_gas:
         )
         fig_ttf.update_traces(line_color="#FF8C00")
         st.plotly_chart(fig_ttf, use_container_width=True)
+
+        st.markdown("---")
+        current_year = datetime.now().year
+        st.markdown(
+            f"#### Jooksva aasta ({current_year}) gaasihindade kuude ülevaade"
+        )
+        df_ttf_table = build_commodity_monthly_table(df_ttf_full, "€/MWh")
+        if not df_ttf_table.empty:
+            st.dataframe(df_ttf_table, hide_index=True, use_container_width=True)
+
         st.caption(
             "📍 **Allikas:** ICE Endex / Yahoo Finance (`TTF=F`) — Dutch TTF Natural Gas Futures."
         )
@@ -681,9 +737,9 @@ with tab_gas:
 
 # --- VAHELEHT 4: BRENT TOORNAFTA ---
 with tab_oil:
-    if not df_brent.empty:
+    if not df_brent_filtered.empty:
         fig_brent = px.area(
-            df_brent,
+            df_brent_filtered,
             x="Date",
             y="Close",
             labels={"Date": "Kuupäev", "Close": "Hind ($/bbl)"},
@@ -691,6 +747,18 @@ with tab_oil:
         )
         fig_brent.update_traces(line_color="#1E90FF")
         st.plotly_chart(fig_brent, use_container_width=True)
+
+        st.markdown("---")
+        current_year = datetime.now().year
+        st.markdown(
+            f"#### Jooksva aasta ({current_year}) naftahindade kuude ülevaade"
+        )
+        df_brent_table = build_commodity_monthly_table(df_brent_full, "$/bbl")
+        if not df_brent_table.empty:
+            st.dataframe(
+                df_brent_table, hide_index=True, use_container_width=True
+            )
+
         st.caption(
             "📍 **Allikas:** ICE Europe / Yahoo Finance (`BZ=F`) — Brent Crude Oil Futures."
         )
@@ -700,9 +768,9 @@ with tab_oil:
 
 # --- VAHELEHT 5: EU ETS CO2 KVOOT ---
 with tab_co2:
-    if not df_co2.empty:
+    if not df_co2_filtered.empty:
         fig_co2 = px.line(
-            df_co2,
+            df_co2_filtered,
             x="Date",
             y="Close",
             labels={"Date": "Kuupäev", "Close": "Hind (€/tCO₂)"},
@@ -710,6 +778,16 @@ with tab_co2:
         )
         fig_co2.update_traces(line_color="#2E8B57")
         st.plotly_chart(fig_co2, use_container_width=True)
+
+        st.markdown("---")
+        current_year = datetime.now().year
+        st.markdown(
+            f"#### Jooksva aasta ({current_year}) heitmekvoodi kuude ülevaade"
+        )
+        df_co2_table = build_commodity_monthly_table(df_co2_full, "€/tCO₂")
+        if not df_co2_table.empty:
+            st.dataframe(df_co2_table, hide_index=True, use_container_width=True)
+
         st.caption(
             "📍 **Allikas:** London Stock Exchange / ICE (`CO2.L` / SparkChange Physical Carbon EUA ETC) — tagatud 1:1 Euroopa Liidu heitmekvoodiga (EUA)."
         )
