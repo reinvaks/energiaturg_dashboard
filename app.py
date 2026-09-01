@@ -37,13 +37,13 @@ def fetch_elering_short_term():
         return pd.DataFrame()
 
 
-@st.cache_data(ttl=3600 * 12)  # Pikk ajalugu uueneb kord 12h jooksul
+@st.cache_data(ttl=3600 * 6)  # Pikk ajalugu uueneb iga 6 tunni järel
 def fetch_elering_long_history(years=5):
-    """Pärib Eleringist viimase 5 aasta elektrihinnad ja arvutab kuude ning päevade keskmised."""
+    """Pärib Eleringist viimase 5 aasta elektrihinnad ja töötleb päeva- ning kuukeskmised."""
     now_utc = datetime.now(timezone.utc)
     all_data = []
 
-    # Pätime andmed aasta kaupa, et mitte ületada API päringu mahtu
+    # Pätime andmed aasta kaupa, et tagada kiire ja stabiilne vastus
     for y in range(years, -1, -1):
         start_dt = now_utc - timedelta(days=(y + 1) * 365)
         end_dt = now_utc - timedelta(days=y * 365)
@@ -63,23 +63,14 @@ def fetch_elering_long_history(years=5):
             continue
 
     if not all_data:
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     df = pd.DataFrame(all_data).drop_duplicates(subset=["timestamp"])
     df["time"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
     df["time_local"] = df["time"].dt.tz_convert("Europe/Tallinn")
     df = df.sort_values("time_local")
 
-    # Kuude keskmised
-    df["year_month"] = df["time_local"].dt.to_period("M").dt.to_timestamp()
-    df_monthly = (
-        df.groupby("year_month")["price"]
-        .agg(mean="mean", min="min", max="max")
-        .reset_index()
-    )
-    df_monthly["s_kwh"] = df_monthly["mean"] / 10
-
-    # Päevade keskmised pikaks graafikuks
+    # 1. Päevade keskmised (viimased 5 aastat)
     df["date"] = df["time_local"].dt.date
     df_daily = (
         df.groupby("date")["price"]
@@ -87,8 +78,21 @@ def fetch_elering_long_history(years=5):
         .reset_index()
     )
     df_daily["date"] = pd.to_datetime(df_daily["date"])
+    df_daily["s_kwh"] = df_daily["mean"] / 10
 
-    return df_monthly, df_daily
+    # 2. Kuude keskmised
+    df["year"] = df["time_local"].dt.year
+    df["month"] = df["time_local"].dt.month
+    df["month_label"] = df["time_local"].dt.strftime("%Y-%m")
+
+    df_monthly = (
+        df.groupby(["year", "month", "month_label"])["price"]
+        .agg(mean="mean", min="min", max="max", count="count")
+        .reset_index()
+    )
+    df_monthly["s_kwh"] = df_monthly["mean"] / 10
+
+    return df, df_daily, df_monthly
 
 
 @st.cache_data(ttl=900)
@@ -120,7 +124,7 @@ with col_btn:
         st.cache_data.clear()
         st.rerun()
 
-# Perioodi valik toorainete graafikutele
+# Perioodi valik teistele toorainetele
 period_map = {
     "1 nädal": "7d",
     "1 kuu": "1mo",
@@ -138,7 +142,7 @@ selected_period = period_map[selected_period_label]
 
 # Andmete laadimine
 df_elekter_short = fetch_elering_short_term()
-df_el_monthly, df_el_daily = fetch_elering_long_history(years=5)
+df_el_raw, df_el_daily, df_el_monthly = fetch_elering_long_history(years=5)
 df_ttf = fetch_commodity_history(["TTF=F"], period=selected_period)
 df_brent = fetch_commodity_history(["BZ=F"], period=selected_period)
 df_co2 = fetch_commodity_history(
@@ -184,7 +188,7 @@ with kpi1:
     else:
         st.metric(label="Elektri hetkehind", value="Pole saadaval")
 
-# 2. Elektri jooksva kuu keskmine
+# 2. Jooksva kuu keskmine
 with kpi2:
     if not df_el_monthly.empty:
         current_month_avg = df_el_monthly.iloc[-1]["mean"]
@@ -195,7 +199,7 @@ with kpi2:
         )
         diff_month = current_month_avg - prev_month_avg
         st.metric(
-            label="Elektri kuu keskmine (MTD)",
+            label="Elektri jooksva kuu keskmine",
             value=f"{current_month_avg:.2f} €/MWh",
             delta=f"{diff_month:+.2f} € vs eelmine kuu",
             delta_color="inverse",
@@ -261,9 +265,9 @@ tab_el, tab_gas, tab_oil, tab_co2 = st.tabs([
     "🌱 EU ETS Heitmekvoot (EUA)",
 ])
 
-# Elektri tab: Lühiajaline + 5a Ajalugu ja Kuukeskmised
 with tab_el:
-    st.markdown("#### 1. Jooksva ja homse päeva hinnad")
+    # 1. Päevasisesed hinnad
+    st.markdown("#### 1. Jooksva ja homse päeva tunnihinnad")
     if not df_elekter_short.empty:
         fig_el_short = px.bar(
             df_elekter_short,
@@ -320,38 +324,113 @@ with tab_el:
         st.warning("Lühiajaliste elektrihindade laadimine ebaõnnestus.")
 
     st.markdown("---")
-    st.markdown("#### 2. Viimase 5 aasta kuude keskmised hinnad")
 
-    if not df_el_monthly.empty:
-        fig_monthly = px.bar(
-            df_el_monthly,
-            x="year_month",
+    # 2. Viimase 5 aasta elektrihinnad päevade kaupa
+    st.markdown("#### 2. Eesti hinnapiirkonna viimase 5 aasta hinnad (päevade kaupa)")
+    if not df_el_daily.empty:
+        fig_daily = px.line(
+            df_el_daily,
+            x="date",
             y="mean",
-            labels={"year_month": "Kuu", "mean": "Keskmine hind (€/MWh)"},
-            title="Nord Pool Eesti hinnapiirkonna kalendrikuude keskmised hinnad (€/MWh)",
+            labels={"date": "Kuupäev", "mean": "Päeva keskmine hind (€/MWh)"},
+            title="Nord Pool Eesti päeva aritmeetilised keskmised hinnad (viimased 5 aastat)",
         )
-        fig_monthly.update_traces(marker_color="#2b5c8f")
-        fig_monthly.update_layout(xaxis_tickformat="%Y-%m")
-        st.plotly_chart(fig_monthly, use_container_width=True)
-
-        # Viimase 6 kuu tabelvaade
-        with st.expander("Vaata viimaste kuude keskmiste tabelit"):
-            df_table = df_el_monthly.tail(12).sort_values(
-                "year_month", ascending=False
-            )
-            df_table_display = pd.DataFrame({
-                "Kuu": df_table["year_month"].dt.strftime("%Y-%m"),
-                "Keskmine hind (€/MWh)": df_table["mean"].round(2),
-                "Keskmine hind (s/kWh)": df_table["s_kwh"].round(2),
-                "Madalaim hind (€/MWh)": df_table["min"].round(2),
-                "Kõrgeim hind (€/MWh)": df_table["max"].round(2),
-            })
-            st.dataframe(df_table_display, hide_index=True, use_container_width=True)
+        fig_daily.update_traces(line_color="#1f77b4", line_width=1.5)
+        st.plotly_chart(fig_daily, use_container_width=True)
     else:
-        st.info("Pikaajalise ajaloo laadimine...")
+        st.info("5 aasta päevaandmete laadimine...")
+
+    st.markdown("---")
+
+    # 3. Jooksva aasta kuude ülevaade ja aasta keskmine tabelis
+    current_year = datetime.now().year
+    st.markdown(f"#### 3. Jooksva aasta ({current_year}) kuude ülevaade ja keskmised")
+
+    if not df_el_raw.empty:
+        # Filtreerime välja ainult jooksva aasta andmed
+        df_curr_year = df_el_raw[df_el_raw["time_local"].dt.year == current_year]
+
+        if not df_curr_year.empty:
+            # Kuude keskmised jooksval aastal
+            df_curr_year_monthly = (
+                df_curr_year.groupby(
+                    df_curr_year["time_local"].dt.strftime("%Y-%m")
+                )["price"]
+                .agg(mean="mean", min="min", max="max")
+                .reset_index()
+            )
+            df_curr_year_monthly.columns = [
+                "Periood",
+                "Keskmine (€/MWh)",
+                "Madalaim (€/MWh)",
+                "Kõrgeim (€/MWh)",
+            ]
+            df_curr_year_monthly["Keskmine (s/kWh)"] = (
+                df_curr_year_monthly["Keskmine (€/MWh)"] / 10
+            )
+
+            # Märgime ära, milline on jooksev kuu
+            current_month_str = datetime.now().strftime("%Y-%m")
+            df_curr_year_monthly["Periood"] = df_curr_year_monthly[
+                "Periood"
+            ].apply(
+                lambda x: f"{x} (jooksev kuu)"
+                if x == current_month_str
+                else f"{x}"
+            )
+
+            # Jooksva aasta aritmeetiline keskmine kuvamise hetkel
+            ytd_mean = df_curr_year["price"].mean()
+            ytd_min = df_curr_year["price"].min()
+            ytd_max = df_curr_year["price"].max()
+
+            # Koostame koondrea aasta keskmise kohta
+            summary_row = pd.DataFrame([{
+                "Periood": f"⭐ AASTA {current_year} KESKMINE (YTD)",
+                "Keskmine (€/MWh)": ytd_mean,
+                "Madalaim (€/MWh)": ytd_min,
+                "Kõrgeim (€/MWh)": ytd_max,
+                "Keskmine (s/kWh)": ytd_mean / 10,
+            }])
+
+            # Liidame tabeli ja koondrea
+            final_table = pd.concat(
+                [df_curr_year_monthly, summary_row], ignore_index=True
+            )
+
+            # Üm張りstame numbrid kuvamiseks
+            final_table["Keskmine (€/MWh)"] = final_table[
+                "Keskmine (€/MWh)"
+            ].apply(lambda x: f"{x:.2f}")
+            final_table["Keskmine (s/kWh)"] = final_table[
+                "Keskmine (s/kWh)"
+            ].apply(lambda x: f"{x:.2f}")
+            final_table["Madalaim (€/MWh)"] = final_table[
+                "Madalaim (€/MWh)"
+            ].apply(lambda x: f"{x:.2f}")
+            final_table["Kõrgeim (€/MWh)"] = final_table[
+                "Kõrgeim (€/MWh)"
+            ].apply(lambda x: f"{x:.2f}")
+
+            # Kuvame tabeli
+            st.dataframe(
+                final_table[
+                    [
+                        "Periood",
+                        "Keskmine (€/MWh)",
+                        "Keskmine (s/kWh)",
+                        "Madalaim (€/MWh)",
+                        "Kõrgeim (€/MWh)",
+                    ]
+                ],
+                hide_index=True,
+                use_container_width=True,
+            )
+        else:
+            st.info(f"Aasta {current_year} andmed pole veel kättesaadavad.")
 
     st.caption(
-        "📍 **Allikas:** Elering Live API / Nord Pool Day-Ahead EE hinnapiirkond."
+        "📍 **Allikas:** Elering Live API / Nord Pool Day-Ahead EE hinnapiirkond. Hinnad on ilma käibemaksuta."
     )
 
 # TTF Gaas
