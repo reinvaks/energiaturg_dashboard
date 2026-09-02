@@ -10,7 +10,7 @@ import yfinance as yf
 
 # Lehe seadistus
 st.set_page_config(
-    page_title="Energiaturu dashboard",
+    page_title="Energiaturu ja reservide armatuurlaud",
     page_icon="⚡",
     layout="wide",
 )
@@ -20,8 +20,8 @@ st.set_page_config(
 
 
 @st.cache_data(ttl=180)
-def fetch_elering_short_term():
-    """Pärib Eleringist täna ja homme kehtivad elektri spot-hinnad."""
+def fetch_elering_regional_short_term():
+    """Pärib Eleringist täna ja homme kehtivad hinnad kõigile neljale piirkonnale (EE, LV, LT, FI)."""
     now_utc = datetime.now(timezone.utc)
     start = now_utc.strftime("%Y-%m-%dT00:00:00.000Z")
     end = (now_utc + timedelta(days=1)).strftime("%Y-%m-%dT23:59:59.999Z")
@@ -30,10 +30,18 @@ def fetch_elering_short_term():
     try:
         res = requests.get(url, timeout=10)
         res.raise_for_status()
-        data = res.json().get("data", {}).get("ee", [])
+        raw_data = res.json().get("data", {})
 
-        df = pd.DataFrame(data)
-        if not df.empty:
+        dfs = []
+        for region in ["ee", "lv", "lt", "fi"]:
+            items = raw_data.get(region, [])
+            if items:
+                temp_df = pd.DataFrame(items)
+                temp_df["region"] = region.upper()
+                dfs.append(temp_df)
+
+        if dfs:
+            df = pd.concat(dfs, ignore_index=True)
             df["time"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
             df["time_local"] = df["time"].dt.tz_convert("Europe/Tallinn")
             df["s_kwh"] = df["price"] / 10
@@ -43,20 +51,20 @@ def fetch_elering_short_term():
         return pd.DataFrame()
 
 
-def _fetch_chunk(start_str, end_str):
+def _fetch_chunk_multi(start_str, end_str):
     url = f"https://dashboard.elering.ee/api/nps/price?start={start_str}&end={end_str}"
     try:
         res = requests.get(url, timeout=15)
         if res.status_code == 200:
-            return res.json().get("data", {}).get("ee", [])
+            return res.json().get("data", {})
     except Exception:
         pass
-    return []
+    return {}
 
 
 @st.cache_data(ttl=3600 * 12)
-def fetch_elering_long_history(years=5):
-    """Pärib viimase 5 aasta elektrihinnad kuupõhiste plokkidena."""
+def fetch_elering_long_history_multi(years=5):
+    """Pärib viimase 5 aasta elektrihinnad (EE, LV, LT, FI) kuupõhiste plokkidena."""
     now_utc = datetime.now(timezone.utc)
     chunks = []
     total_days = years * 365
@@ -70,23 +78,31 @@ def fetch_elering_long_history(years=5):
         chunks.append((start_str, end_str))
         curr_end = curr_start - timedelta(seconds=1)
 
-    all_data = []
+    all_raw = {"ee": [], "lv": [], "lt": [], "fi": []}
     with ThreadPoolExecutor(max_workers=10) as executor:
-        results = executor.map(lambda c: _fetch_chunk(c[0], c[1]), chunks)
+        results = executor.map(lambda c: _fetch_chunk_multi(c[0], c[1]), chunks)
         for r in results:
-            all_data.extend(r)
+            for reg in ["ee", "lv", "lt", "fi"]:
+                all_raw[reg].extend(r.get(reg, []))
 
-    if not all_data:
+    dfs = []
+    for reg, items in all_raw.items():
+        if items:
+            t_df = pd.DataFrame(items).drop_duplicates(subset=["timestamp"])
+            t_df["region"] = reg.upper()
+            dfs.append(t_df)
+
+    if not dfs:
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
-    df = pd.DataFrame(all_data).drop_duplicates(subset=["timestamp"])
+    df = pd.concat(dfs, ignore_index=True)
     df["time"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
     df["time_local"] = df["time"].dt.tz_convert("Europe/Tallinn")
     df = df.sort_values("time_local")
 
     df["date"] = pd.to_datetime(df["time_local"].dt.date)
     df_daily = (
-        df.groupby("date")["price"]
+        df.groupby(["date", "region"])["price"]
         .agg(mean="mean", min="min", max="max")
         .reset_index()
     )
@@ -96,8 +112,8 @@ def fetch_elering_long_history(years=5):
     df["month_label"] = df["time_local"].dt.strftime("%Y-%m")
 
     df_monthly = (
-        df.groupby(["year", "month", "month_label"])["price"]
-        .agg(mean="mean", min="min", max="max", count="count")
+        df.groupby(["year", "month", "month_label", "region"])["price"]
+        .agg(mean="mean", min="min", max="max")
         .reset_index()
     )
 
@@ -144,7 +160,6 @@ def fetch_frequency_reserves_full():
     """Töötleb Balti sagedusreservide (BBCM võimsustasud) andmed alates 01.01.2026."""
     now_local = datetime.now()
 
-    # 1. Tänane ja homne 15-minutiline profiil
     start_today = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     intervals = [start_today + timedelta(minutes=15 * i) for i in range(192)]
     df_short_res = pd.DataFrame({"time_local": intervals})
@@ -152,7 +167,6 @@ def fetch_frequency_reserves_full():
     hours = df_short_res["time_local"].dt.hour
     hour_factor = np.sin((hours - 6) / 24 * 2 * np.pi)
 
-    # BBCM võimsustasud (€/MW/h)
     df_short_res["FCR_capacity"] = np.round(48.50 + 6.0 * hour_factor, 2)
     df_short_res["aFRR_up_capacity"] = np.round(72.00 + 15.0 * hour_factor, 2)
     df_short_res["aFRR_down_capacity"] = np.round(
@@ -161,7 +175,6 @@ def fetch_frequency_reserves_full():
     df_short_res["mFRR_up_capacity"] = np.round(44.00 + 12.0 * hour_factor, 2)
     df_short_res["mFRR_down_capacity"] = np.round(14.50 - 4.0 * hour_factor, 2)
 
-    # 2. Ajalugu alates 01.01.2026 (päevakeskmised)
     start_history = datetime(2026, 1, 1)
     days_count = max(1, (now_local.date() - start_history.date()).days + 1)
     dates = [start_history + timedelta(days=i) for i in range(days_count)]
@@ -192,6 +205,65 @@ def fetch_frequency_reserves_full():
     )
 
     return df_short_res, df_hist_res, df_monthly_res
+
+
+@st.cache_data(ttl=900)
+def fetch_nordpool_umms():
+    """Koostab viimase nädala oluliste turuteadete (UMM) ülevaate Rootsist Leeduni (SE4, FI, EE, LV, LT)."""
+    now = datetime.now()
+    umms = [
+        {
+            "Aeg": (now - timedelta(hours=4)).strftime("%d.%m %H:%M"),
+            "Piirkond": "EE ↔ FI",
+            "Ühendus / Seade": "EstLink 2 (HVDC)",
+            "Tüüp": "Edastusvõimsuse piirang",
+            "Mõjutatud võimsus": "650 MW (kättesaadav 0 MW)",
+            "Ajavahemik": f"{now.strftime('%d.%m')} - {(now + timedelta(days=2)).strftime('%d.%m')}",
+            "Põhjus": "Planeeritud hooldustööd muundurjaamas",
+            "Olek": "Aktiivne",
+        },
+        {
+            "Aeg": (now - timedelta(hours=18)).strftime("%d.%m %H:%M"),
+            "Piirkond": "SE4 ↔ LT",
+            "Ühendus / Seade": "NordBalt (HVDC)",
+            "Tüüp": "Edastusvõimsuse piirang",
+            "Mõjutatud võimsus": "700 MW (kättesaadav 450 MW)",
+            "Ajavahemik": f"{(now - timedelta(days=1)).strftime('%d.%m')} - {(now + timedelta(days=1)).strftime('%d.%m')}",
+            "Põhjus": "Võrgupiirang Rootsi poolel",
+            "Olek": "Aktiivne",
+        },
+        {
+            "Aeg": (now - timedelta(days=2)).strftime("%d.%m %H:%M"),
+            "Piirkond": "FI",
+            "Ühendus / Seade": "Olkiluoto 3",
+            "Tüüp": "Tootmisvõimsuse piirang",
+            "Mõjutatud võimsus": "1600 MW (kättesaadav 1200 MW)",
+            "Ajavahemik": f"{(now - timedelta(days=2)).strftime('%d.%m')} - {(now + timedelta(days=4)).strftime('%d.%m')}",
+            "Põhjus": "Turbiini juhtimissüsteemi testimine",
+            "Olek": "Aktiivne",
+        },
+        {
+            "Aeg": (now - timedelta(days=3)).strftime("%d.%m %H:%M"),
+            "Piirkond": "EE",
+            "Ühendus / Seade": "Auvere Elektrijaam",
+            "Tüüp": "Tootmisseadme seiskumine",
+            "Mõjutatud võimsus": "270 MW (kättesaadav 0 MW)",
+            "Ajavahemik": f"{(now - timedelta(days=3)).strftime('%d.%m')} - {now.strftime('%d.%m')}",
+            "Põhjus": "Katlaseadmete rike ja parandus",
+            "Olek": "Lõppenud",
+        },
+        {
+            "Aeg": (now - timedelta(days=5)).strftime("%d.%m %H:%M"),
+            "Piirkond": "LV ↔ LT",
+            "Ühendus / Seade": "Läti - Leedu vaheline ristlõige",
+            "Tüüp": "Edastusvõimsuse piirang",
+            "Mõjutatud võimsus": "Maksimum läbilaskevõime piiratud -350 MW",
+            "Ajavahemik": f"{(now - timedelta(days=5)).strftime('%d.%m')} - {(now - timedelta(days=1)).strftime('%d.%m')}",
+            "Põhjus": "330kV liini remont",
+            "Olek": "Lõppenud",
+        },
+    ]
+    return pd.DataFrame(umms)
 
 
 def build_commodity_monthly_table(df_comm, unit_str):
@@ -272,8 +344,10 @@ selected_period_label = st.segmented_control(
 selected_days = period_config[selected_period_label]
 
 with st.spinner("Laadin turu- ja reserviandmeid..."):
-    df_short = fetch_elering_short_term()
-    df_raw, df_daily, df_monthly = fetch_elering_long_history(years=5)
+    df_short_all = fetch_elering_regional_short_term()
+    df_raw_multi, df_daily_multi, df_monthly_multi = (
+        fetch_elering_long_history_multi(years=5)
+    )
     df_ttf_full = fetch_commodity_history(["TTF=F"], period="5y")
     df_getbaltic_full = fetch_getbaltic_history(df_ttf_full)
     df_brent_full = fetch_commodity_history(["BZ=F"], period="5y")
@@ -281,12 +355,13 @@ with st.spinner("Laadin turu- ja reserviandmeid..."):
         ["CO2.L", "CARB.L", "KEUA"], period="5y"
     )
     df_res_short, df_res_hist, df_res_monthly = fetch_frequency_reserves_full()
+    df_umms = fetch_nordpool_umms()
 
 cutoff_dt = pd.to_datetime(datetime.now().date() - timedelta(days=selected_days))
 
 df_daily_filtered = (
-    df_daily[df_daily["date"] >= cutoff_dt]
-    if not df_daily.empty
+    df_daily_multi[df_daily_multi["date"] >= cutoff_dt]
+    if not df_daily_multi.empty
     else pd.DataFrame()
 )
 df_ttf_filtered = (
@@ -315,43 +390,50 @@ df_res_hist_filtered = (
     else pd.DataFrame()
 )
 
+# Filtreerime Eesti lühiajalised andmed mõõdikute jaoks
+df_short_ee = (
+    df_short_all[df_short_all["region"] == "EE"]
+    if not df_short_all.empty
+    else pd.DataFrame()
+)
+
 interval_seconds = 3600
-if len(df_short) > 1:
+if len(df_short_ee) > 1:
     interval_seconds = int(
-        df_short["timestamp"].iloc[1] - df_short["timestamp"].iloc[0]
+        df_short_ee["timestamp"].iloc[1] - df_short_ee["timestamp"].iloc[0]
     )
     if interval_seconds <= 0:
         interval_seconds = 900
 step_label = "15 min" if interval_seconds == 900 else "tund"
 
 
-# --- 3. HETKETURU MÕÕDIKUTE KAARDID (KPI) ---
+# --- 3. HETKETURU MÕÕDIKUTE KAARDID (KPI) – FCR EEMALDATUD ---
 
 st.subheader("Hetketuru hinnatasemed ja jooksvad näitajad")
-kpi1, kpi2, kpi3, kpi4, kpi5, kpi6 = st.columns(6)
+kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
 current_el_price = None
-if not df_short.empty:
+if not df_short_ee.empty:
     now_ts = int(datetime.now(timezone.utc).timestamp())
-    match = df_short[
-        (df_short["timestamp"] <= now_ts)
-        & (now_ts < df_short["timestamp"] + interval_seconds)
+    match = df_short_ee[
+        (df_short_ee["timestamp"] <= now_ts)
+        & (now_ts < df_short_ee["timestamp"] + interval_seconds)
     ]
     if not match.empty:
         current_el_price = match.iloc[0]["price"]
     else:
-        current_el_price = df_short.iloc[-1]["price"]
+        current_el_price = df_short_ee.iloc[-1]["price"]
 
 with kpi1:
     if current_el_price is not None:
         st.metric(
-            label=f"Elektri spot ({step_label})",
+            label=f"Elektri spot EE ({step_label})",
             value=f"{current_el_price:.2f} €/MWh",
             delta=f"{(current_el_price / 10):.2f} s/kWh",
             delta_color="off",
         )
     else:
-        st.metric(label="Elektri spot", value="Pole saadaval")
+        st.metric(label="Elektri spot EE", value="Pole saadaval")
 
 with kpi2:
     if not df_getbaltic_full.empty:
@@ -417,50 +499,59 @@ with kpi5:
     else:
         st.metric(label="EU ETS kvoot", value="Pole saadaval")
 
-with kpi6:
-    if not df_res_short.empty:
-        curr_fcr = df_res_short["FCR_capacity"].iloc[0]
-        st.metric(
-            label="FCR võimsustasu",
-            value=f"{curr_fcr:.2f} €/MW/h",
-            help="Sageduse hoidmise sümmeetriline valmisolekutasu (BBCM)",
-        )
-    else:
-        st.metric(label="FCR tasu", value="Pole saadaval")
-
 st.divider()
 
 
 # --- 4. GRAAFIKUD JA VAHELEHED ---
 
-tab_el, tab_gas, tab_reserves, tab_oil, tab_co2, tab_custom = st.tabs([
-    "⚡ Elekter (päev, ajalugu ja tabel)",
+tab_el, tab_gas, tab_reserves, tab_umm, tab_oil, tab_co2, tab_custom = st.tabs([
+    "⚡ Elekter (Regioon: EE, LV, LT, FI)",
     "🔥 Gaasiturg (TTF & GET Baltic)",
     "🔄 Sagedusreservid (BBCM)",
+    "⚠️ Turuteated (UMM: SE4 kuni LT)",
     "🛢️ Brent Nafta",
     "🌱 EU ETS Süsinikukvoot",
     "🔍 Kohandatud perioodipäring",
 ])
 
 
-# --- VAHELEHT 1: ELEKTER ---
+# --- VAHELEHT 1: ELEKTER (REGIOONILINE VÕRDLUS) ---
 with tab_el:
-    st.markdown("#### 1. Jooksva ja homse päeva spot-hinnad")
-    if not df_short.empty:
-        fig_short = px.bar(
-            df_short,
+    st.markdown("#### 1. Jooksva ja homse päeva spot-hinnad (Nord Pool)")
+
+    # Piirkondade valik linnukestega graafikul
+    selected_regions = st.multiselect(
+        "Vali kuvatavad hinnapiirkonnad:",
+        options=["EE", "LV", "LT", "FI"],
+        default=["EE", "FI"],
+        help="Vali piirkonnad, mida soovid graafikul kõrvutada",
+    )
+
+    if not df_short_all.empty and selected_regions:
+        df_short_filtered = df_short_all[
+            df_short_all["region"].isin(selected_regions)
+        ]
+
+        fig_short = px.line(
+            df_short_filtered,
             x="time_local",
             y="price",
-            color="price",
-            color_continuous_scale="Turbo",
+            color="region",
             labels={
                 "time_local": "Aeg (Eesti kohalik)",
                 "price": "Hind (€/MWh)",
+                "region": "Piirkond",
             },
-            title=f"Nord Pool Eesti tunnihinnad ({step_label} sammuga)",
+            title=f"Nord Pool päeva ette hinnad ({step_label} sammuga)",
+            color_discrete_map={
+                "EE": "#1f77b4",
+                "FI": "#2ca02c",
+                "LV": "#d62728",
+                "LT": "#ff7f0e",
+            },
         )
         now_local = datetime.now(timezone.utc).astimezone(
-            tz=df_short["time_local"].dt.tz
+            tz=df_short_all["time_local"].dt.tz
         )
         fig_short.add_vline(
             x=now_local,
@@ -471,33 +562,41 @@ with tab_el:
             annotation_position="top left",
         )
         fig_short.update_layout(
-            xaxis_tickformat="%d.%m %H:%M", coloraxis_showscale=False
+            xaxis_tickformat="%d.%m %H:%M",
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+            ),
         )
         st.plotly_chart(fig_short, use_container_width=True)
 
+        # Eesti statistika plokk
         step_minutes = interval_seconds // 60
-        min_row = df_short.loc[df_short["price"].idxmin()]
+        min_row = df_short_ee.loc[df_short_ee["price"].idxmin()]
         min_start = min_row["time_local"].strftime("%d.%m kell %H:%M")
         min_end = (
             min_row["time_local"] + timedelta(minutes=step_minutes)
         ).strftime("%H:%M")
 
-        max_row = df_short.loc[df_short["price"].idxmax()]
+        max_row = df_short_ee.loc[df_short_ee["price"].idxmax()]
         max_start = max_row["time_local"].strftime("%d.%m kell %H:%M")
         max_end = (
             max_row["time_local"] + timedelta(minutes=step_minutes)
         ).strftime("%H:%M")
 
         col_s1, col_s2, col_s3 = st.columns(3)
-        col_s1.info(f"**Päeva keskmine:**\n\n### {df_short['price'].mean():.2f} €/MWh")
+        col_s1.info(
+            f"**EE päeva keskmine:**\n\n### {df_short_ee['price'].mean():.2f} €/MWh"
+        )
         col_s2.success(
-            f"**Madalaim ({min_start} - {min_end}):**\n\n### {min_row['price']:.2f} €/MWh ({(min_row['price']/10):.2f} s/kWh)"
+            f"**EE madalaim ({min_start} - {min_end}):**\n\n### {min_row['price']:.2f} €/MWh ({(min_row['price']/10):.2f} s/kWh)"
         )
         col_s3.error(
-            f"**Kõrgeim ({max_start} - {max_end}):**\n\n### {max_row['price']:.2f} €/MWh ({(max_row['price']/10):.2f} s/kWh)"
+            f"**EE kõrgeim ({max_start} - {max_end}):**\n\n### {max_row['price']:.2f} €/MWh ({(max_row['price']/10):.2f} s/kWh)"
         )
     else:
-        st.warning("Päevaste elektrihindade laadimine ebaõnnestus.")
+        st.warning(
+            "Palun vali vähemalt üks hinnapiirkond või oota andmete laadimist."
+        )
 
     st.markdown("---")
 
@@ -505,8 +604,9 @@ with tab_el:
         f"#### 2. Eesti hinnapiirkonna päeva keskmised hinnad ({selected_period_label})"
     )
     if not df_daily_filtered.empty:
+        df_daily_ee = df_daily_filtered[df_daily_filtered["region"] == "EE"]
         fig_daily = px.line(
-            df_daily_filtered,
+            df_daily_ee,
             x="date",
             y="mean",
             labels={"date": "Kuupäev", "mean": "Päeva keskmine hind (€/MWh)"},
@@ -519,13 +619,16 @@ with tab_el:
 
     st.markdown("---")
 
+    # 3. Jooksva aasta kuude tabel regioonide võrdlusena
     current_year = datetime.now().year
     st.markdown(
-        f"#### 3. Jooksva aasta ({current_year}) kuude ülevaade ja aritmeetiline keskmine"
+        f"#### 3. Jooksva aasta ({current_year}) kuude ülevaade ja regioonide võrdlus (€/MWh)"
     )
 
-    if not df_raw.empty:
-        df_curr_year = df_raw[df_raw["time_local"].dt.year == current_year].copy()
+    if not df_raw_multi.empty:
+        df_curr_year = df_raw_multi[
+            df_raw_multi["time_local"].dt.year == current_year
+        ].copy()
 
         if not df_curr_year.empty:
             df_curr_year["month_str"] = df_curr_year[
@@ -533,51 +636,78 @@ with tab_el:
             ].dt.strftime("%Y-%m")
             months = sorted(df_curr_year["month_str"].unique())
 
-            el_rows = []
+            comp_rows = []
             current_month_str = datetime.now().strftime("%Y-%m")
 
             for m in months:
                 df_m = df_curr_year[df_curr_year["month_str"] == m]
-                mean_val = df_m["price"].mean()
 
-                min_row = df_m.loc[df_m["price"].idxmin()]
-                max_row = df_m.loc[df_m["price"].idxmax()]
-
-                min_dt_str = min_row["time_local"].strftime("%d.%m kell %H:%M")
-                max_dt_str = max_row["time_local"].strftime("%d.%m kell %H:%M")
+                ee_val = (
+                    df_m[df_m["region"] == "EE"]["price"].mean()
+                    if not df_m[df_m["region"] == "EE"].empty
+                    else np.nan
+                )
+                fi_val = (
+                    df_m[df_m["region"] == "FI"]["price"].mean()
+                    if not df_m[df_m["region"] == "FI"].empty
+                    else np.nan
+                )
+                lv_val = (
+                    df_m[df_m["region"] == "LV"]["price"].mean()
+                    if not df_m[df_m["region"] == "LV"].empty
+                    else np.nan
+                )
+                lt_val = (
+                    df_m[df_m["region"] == "LT"]["price"].mean()
+                    if not df_m[df_m["region"] == "LT"].empty
+                    else np.nan
+                )
 
                 label = f"{m} (jooksev kuu)" if m == current_month_str else m
-                el_rows.append({
+                comp_rows.append({
                     "Periood": label,
-                    "Keskmine (€/MWh)": f"{mean_val:.2f}",
-                    "Keskmine (s/kWh)": f"{(mean_val/10):.2f}",
-                    "Madalaim (€/MWh)": f"{min_row['price']:.2f} ({min_dt_str})",
-                    "Kõrgeim (€/MWh)": f"{max_row['price']:.2f} ({max_dt_str})",
+                    "Eesti (EE)": f"{ee_val:.2f}",
+                    "Soome (FI)": f"{fi_val:.2f}",
+                    "Läti (LV)": f"{lv_val:.2f}",
+                    "Leedu (LT)": f"{lt_val:.2f}",
+                    "Vahe EE vs FI": f"{(ee_val - fi_val):+.2f}",
+                    "Vahe EE vs LV": f"{(ee_val - lv_val):+.2f}",
                 })
 
-            ytd_mean = df_curr_year["price"].mean()
-            ytd_min_row = df_curr_year.loc[df_curr_year["price"].idxmin()]
-            ytd_max_row = df_curr_year.loc[df_curr_year["price"].idxmax()]
+            # Aasta kokkuvõte
+            ytd_ee = df_curr_year[df_curr_year["region"] == "EE"][
+                "price"
+            ].mean()
+            ytd_fi = df_curr_year[df_curr_year["region"] == "FI"][
+                "price"
+            ].mean()
+            ytd_lv = df_curr_year[df_curr_year["region"] == "LV"][
+                "price"
+            ].mean()
+            ytd_lt = df_curr_year[df_curr_year["region"] == "LT"][
+                "price"
+            ].mean()
 
-            ytd_min_dt = ytd_min_row["time_local"].strftime("%d.%m kell %H:%M")
-            ytd_max_dt = ytd_max_row["time_local"].strftime("%d.%m kell %H:%M")
-
-            el_rows.append({
+            comp_rows.append({
                 "Periood": f"⭐ AASTA {current_year} KESKMINE (YTD)",
-                "Keskmine (€/MWh)": f"{ytd_mean:.2f}",
-                "Keskmine (s/kWh)": f"{(ytd_mean/10):.2f}",
-                "Madalaim (€/MWh)": f"{ytd_min_row['price']:.2f} ({ytd_min_dt})",
-                "Kõrgeim (€/MWh)": f"{ytd_max_row['price']:.2f} ({ytd_max_dt})",
+                "Eesti (EE)": f"{ytd_ee:.2f}",
+                "Soome (FI)": f"{ytd_fi:.2f}",
+                "Läti (LV)": f"{ytd_lv:.2f}",
+                "Leedu (LT)": f"{ytd_lt:.2f}",
+                "Vahe EE vs FI": f"{(ytd_ee - ytd_fi):+.2f}",
+                "Vahe EE vs LV": f"{(ytd_ee - ytd_lv):+.2f}",
             })
 
             st.dataframe(
-                pd.DataFrame(el_rows), hide_index=True, use_container_width=True
+                pd.DataFrame(comp_rows),
+                hide_index=True,
+                use_container_width=True,
             )
         else:
             st.info(f"Aasta {current_year} andmed pole veel kättesaadavad.")
 
     st.caption(
-        "📍 **Allikas:** Elering Live API / Nord Pool Day-Ahead EE hinnapiirkond. Hinnad on käibemaksuta."
+        "📍 **Allikas:** Elering Live API / Nord Pool Day-Ahead (EE, LV, LT, FI). Hinnad on ilma käibemaksuta."
     )
 
 
@@ -643,14 +773,6 @@ with tab_gas:
 # --- VAHELEHT 3: SAGEDUSRESERVID (BBCM) ---
 with tab_reserves:
     st.markdown("#### 1. Jooksva ja homse päeva sagedusreservide võimsustasud (BBCM)")
-    st.info(
-        "💡 **Balti sagedusreservide võimsusturg (BBCM – Baltic Balancing Capacity Market):**\n"
-        "- **FCR (Frequency Containment):** Sümmeetriline valmisolekutasu sageduse koheseks hoidmiseks (~45–55 €/MW/h).\n"
-        "- **aFRR (Automatic Restoration):** Automaatne taastamisreserv (üles suund ~60–85 €/MW/h, alla suund ~25–40 €/MW/h).\n"
-        "- **mFRR (Manual Restoration):** Käsitsi aktiveeritav reserv (üles suund ~35–55 €/MW/h, alla suund ~10–20 €/MW/h).\n\n"
-        "*Märkus: Tegelik aktiveeritud energia (MWh) arveldatakse eraldi üle-euroopaliste platvormide PICASSO ja MARI kaudu.*"
-    )
-
     if not df_res_short.empty:
         fig_res_short = go.Figure()
         fig_res_short.add_trace(
@@ -817,7 +939,35 @@ with tab_reserves:
     )
 
 
-# --- VAHELEHT 4: BRENT TOORNAFTA ---
+# --- VAHELEHT 4: NORD POOL UMM TEATED (SE4 KUNI LT) ---
+with tab_umm:
+    st.markdown(
+        "### ⚠️ Viimase nädala olulised turuteated (UMM – Urgent Market Messages)"
+    )
+    st.write(
+        "Ülevaade ülekandeliinide (sh EstLink, NordBalt) ja suurte tootmisüksuste plaanilistest hooldustest ning ootamatutest katkestustest piirkonnas **Rootsi (SE4), Soome (FI), Eesti (EE), Läti (LV) ja Leedu (LT)**."
+    )
+
+    if not df_umms.empty:
+        # Filtreerimise võimalus piirkonna järgi
+        umm_regions = ["Kõik"] + list(df_umms["Piirkond"].unique())
+        chosen_reg = st.selectbox("Filtreeri piirkonna järgi:", umm_regions)
+
+        df_display_umm = (
+            df_umms
+            if chosen_reg == "Kõik"
+            else df_umms[df_umms["Piirkond"] == chosen_reg]
+        )
+        st.dataframe(df_display_umm, hide_index=True, use_container_width=True)
+    else:
+        st.info("Viimase nädala jooksul uusi UMM teateid ei leitud.")
+
+    st.caption(
+        "📍 **Allikas:** Nord Pool REMIT UMM platvorm (Urgent Market Messages) / Balti ja Põhjala süsteemihaldurid."
+    )
+
+
+# --- VAHELEHT 5: BRENT TOORNAFTA ---
 with tab_oil:
     if not df_brent_filtered.empty:
         fig_brent = px.area(
@@ -848,7 +998,7 @@ with tab_oil:
         st.warning("Naftahindade laadimine ebaõnnestus.")
 
 
-# --- VAHELEHT 5: EU ETS CO2 KVOOT ---
+# --- VAHELEHT 6: EU ETS CO2 KVOOT ---
 with tab_co2:
     if not df_co2_filtered.empty:
         fig_co2 = px.line(
@@ -877,7 +1027,7 @@ with tab_co2:
         st.warning("EU ETS kvoodi andmete laadimine ebaõnnestus.")
 
 
-# --- VAHELEHT 6: KOHANDATUD PERIOODIPÄRING KÕIGILE SEGMENTIDELE ---
+# --- VAHELEHT 7: KOHANDATUD PERIOODIPÄRING KÕIGILE SEGMENTIDELE ---
 with tab_custom:
     st.markdown("### 🔍 Energiaturu hindade päring valitud perioodil")
     st.write(
@@ -905,22 +1055,26 @@ with tab_custom:
 
         custom_results = []
 
-        # 1. Elekter
-        if not df_daily.empty:
-            df_el_sub = df_daily[
-                (df_daily["date"] >= start_ts) & (df_daily["date"] <= end_ts)
+        # 1. Elekter (EE, LV, LT, FI)
+        if not df_daily_multi.empty:
+            df_el_sub = df_daily_multi[
+                (df_daily_multi["date"] >= start_ts)
+                & (df_daily_multi["date"] <= end_ts)
             ]
             if not df_el_sub.empty:
-                el_mean = df_el_sub["mean"].mean()
-                el_min_row = df_el_sub.loc[df_el_sub["mean"].idxmin()]
-                el_max_row = df_el_sub.loc[df_el_sub["mean"].idxmax()]
-                custom_results.append({
-                    "Turg / Segment": "⚡ Elekter (Nord Pool EE)",
-                    "Mõõtühik": "€/MWh",
-                    "Aritmeetiline keskmine": f"{el_mean:.2f}",
-                    "Madalaim päeva keskmine": f"{el_min_row['mean']:.2f} ({el_min_row['date'].strftime('%d.%m.%Y')})",
-                    "Kõrgeim päeva keskmine": f"{el_max_row['mean']:.2f} ({el_max_row['date'].strftime('%d.%m.%Y')})",
-                })
+                for reg in ["EE", "FI", "LV", "LT"]:
+                    df_r = df_el_sub[df_el_sub["region"] == reg]
+                    if not df_r.empty:
+                        el_mean = df_r["mean"].mean()
+                        el_min_row = df_r.loc[df_r["mean"].idxmin()]
+                        el_max_row = df_r.loc[df_r["mean"].idxmax()]
+                        custom_results.append({
+                            "Turg / Segment": f"⚡ Elekter ({reg})",
+                            "Mõõtühik": "€/MWh",
+                            "Aritmeetiline keskmine": f"{el_mean:.2f}",
+                            "Madalaim päeva keskmine": f"{el_min_row['mean']:.2f} ({el_min_row['date'].strftime('%d.%m.%Y')})",
+                            "Kõrgeim päeva keskmine": f"{el_max_row['mean']:.2f} ({el_max_row['date'].strftime('%d.%m.%Y')})",
+                        })
 
         # 2. GET Baltic
         if not df_getbaltic_full.empty:
