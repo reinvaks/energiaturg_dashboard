@@ -1,5 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import re
+import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -207,80 +209,49 @@ def fetch_frequency_reserves_full():
     return df_short_res, df_hist_res, df_monthly_res
 
 
-@st.cache_data(ttl=300)
-def get_nordpool_umm_dataset():
-    """Koostab kontrollitud ja operatiivse UMM teadete andmestiku konkreetsete objektide ja võimsustega."""
-    now = datetime.now()
-    
-    # Täpsed turuobjektid, nende tehnilised parameetrid ja otselingid Nord Pooli portaali
-    umms = [
-        {
-            "Kuupäev / Aeg": (now - timedelta(hours=3)).strftime("%d.%m %H:%M"),
-            "Regioon": "EE ↔ FI",
-            "Objekti täpne nimetus": "EstLink 2 (HVDC) — Harku-Anttila 500kV alalisvooluühendus",
-            "Tüüp": "Edastuspiirang",
-            "Installeeritud (MW)": "650 MW",
-            "Kättesaadav (MW)": "0 MW",
-            "Turult VÄLJAS (MW)": "650 MW (100%)",
-            "Periood": f"{now.strftime('%d.%m %H:%M')} – {(now + timedelta(days=3)).strftime('%d.%m 18:00')}",
-            "Põhjus / Kirjeldus": "Plaaniline konverterjaama jahutussüsteemide hooldus",
-            "Olek": "Aktiivne",
-            "Link": "https://umm.nordpoolgroup.com/#/messages?areas=EE,FI",
-        },
-        {
-            "Kuupäev / Aeg": (now - timedelta(hours=14)).strftime("%d.%m %H:%M"),
-            "Regioon": "SE4 ↔ LT",
-            "Objekti täpne nimetus": "NordBalt (HVDC) — Klaipėda-Nybro 300kV merekaabel",
-            "Tüüp": "Edastuspiirang",
-            "Installeeritud (MW)": "700 MW",
-            "Kättesaadav (MW)": "450 MW",
-            "Turult VÄLJAS (MW)": "250 MW (36%)",
-            "Periood": f"{(now - timedelta(days=1)).strftime('%d.%m 08:00')} – {(now + timedelta(days=1)).strftime('%d.%m 20:00')}",
-            "Põhjus / Kirjeldus": "Rootsi põhivõrgu sisemine läbilaskevõime piirang (SE4)",
-            "Olek": "Aktiivne",
-            "Link": "https://umm.nordpoolgroup.com/#/messages?areas=SE4,LT",
-        },
-        {
-            "Kuupäev / Aeg": (now - timedelta(days=1)).strftime("%d.%m %H:%M"),
-            "Regioon": "FI",
-            "Objekti täpne nimetus": "Olkiluoto 3 tuumaelektrijaam (TVO) — 1600 MW reaktor",
-            "Tüüp": "Tootmispiirang",
-            "Installeeritud (MW)": "1600 MW",
-            "Kättesaadav (MW)": "1150 MW",
-            "Turult VÄLJAS (MW)": "450 MW (28%)",
-            "Periood": f"{(now - timedelta(days=1)).strftime('%d.%m 00:00')} – {(now + timedelta(days=4)).strftime('%d.%m 23:59')}",
-            "Põhjus / Kirjeldus": "Turbiinisaali juhtklappide korraline katsetus ja reguleerimine",
-            "Olek": "Aktiivne",
-            "Link": "https://umm.nordpoolgroup.com/#/messages?areas=FI",
-        },
-        {
-            "Kuupäev / Aeg": (now - timedelta(days=2)).strftime("%d.%m %H:%M"),
-            "Regioon": "EE",
-            "Objekti täpne nimetus": "Auvere Elektrijaam (Enefit Power) — 300 MW põlevkivi/biomassi plokk",
-            "Tüüp": "Tootmisrike",
-            "Installeeritud (MW)": "274 MW",
-            "Kättesaadav (MW)": "0 MW",
-            "Turult VÄLJAS (MW)": "274 MW (100%)",
-            "Periood": f"{(now - timedelta(days=2)).strftime('%d.%m 08:30')} – {now.strftime('%d.%m 22:00')}",
-            "Põhjus / Kirjeldus": "Katlaseadmete soojusvaheti lekke parandustööd",
-            "Olek": "Lõpetamisel",
-            "Link": "https://umm.nordpoolgroup.com/#/messages?areas=EE",
-        },
-        {
-            "Kuupäev / Aeg": (now - timedelta(days=4)).strftime("%d.%m %H:%M"),
-            "Regioon": "LV",
-            "Objekti täpne nimetus": "Riia TEC-2 (Latvenergo) — Kombineeritud tsükliga gaasiturbiinplokk",
-            "Tüüp": "Plaaniline hooldus",
-            "Installeeritud (MW)": "420 MW",
-            "Kättesaadav (MW)": "0 MW",
-            "Turult VÄLJAS (MW)": "420 MW (100%)",
-            "Periood": f"{(now - timedelta(days=4)).strftime('%d.%m 06:00')} – {(now - timedelta(days=1)).strftime('%d.%m 18:00')}",
-            "Põhjus / Kirjeldus": "Gaasiturbiini põletusseadmete inspektsioon",
-            "Olek": "Lõppenud",
-            "Link": "https://umm.nordpoolgroup.com/#/messages?areas=LV",
-        },
-    ]
-    return pd.DataFrame(umms)
+@st.cache_data(ttl=180)
+def fetch_realtime_nordpool_umms():
+    """Pärib reaalajas Nord Pooli ametlikku REMIT RSS teabevoogu ilma staatiliste fiktiivsete andmeteta."""
+    results = []
+    # Kontrollitavad piirkonnad
+    areas = ["EE", "FI", "LV", "LT", "SE4"]
+
+    for area in areas:
+        url = f"https://umm.nordpoolgroup.com/api/feed/rss?areas={area}"
+        try:
+            res = requests.get(url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+            if res.status_code == 200 and res.content:
+                root = ET.fromstring(res.content)
+                channel = root.find("channel")
+                if channel is not None:
+                    for item in channel.findall("item"):
+                        title = item.findtext("title", "")
+                        link = item.findtext("link", "https://umm.nordpoolgroup.com/#/messages")
+                        pub_date = item.findtext("pubDate", "")
+                        desc = item.findtext("description", "")
+
+                        # Eraldame võimsuse numbrid regexi abil (nt 'Unavailable: 300 MW', '300MW', 'Capacity: 500 MW')
+                        unavail_match = re.search(r"(\d+[\.,]?\d*)\s*MW", desc + " " + title, re.IGNORECASE)
+                        unavail_str = f"{unavail_match.group(1)} MW" if unavail_match else "Vaata teadet"
+
+                        # Vormindame avaldamisaja
+                        formatted_date = pub_date[:16] if pub_date else "-"
+
+                        results.append({
+                            "Avaldatud": formatted_date,
+                            "Regioon": area,
+                            "Objekti kirjeldus / Pealkiri": title,
+                            "Turult VÄLJAS (MW)": unavail_str,
+                            "Kirjeldus": desc[:180] + "..." if len(desc) > 180 else desc,
+                            "Link": link,
+                        })
+        except Exception:
+            continue
+
+    if results:
+        df_res = pd.DataFrame(results).drop_duplicates(subset=["Link"])
+        return df_res
+    return pd.DataFrame()
 
 
 def build_commodity_monthly_table(df_comm, unit_str):
@@ -372,7 +343,7 @@ with st.spinner("Laadin turu- ja reserviandmeid..."):
         ["CO2.L", "CARB.L", "KEUA"], period="5y"
     )
     df_res_short, df_res_hist, df_res_monthly = fetch_frequency_reserves_full()
-    df_umms = get_nordpool_umm_dataset()
+    df_umms = fetch_realtime_nordpool_umms()
 
 cutoff_dt = pd.to_datetime(datetime.now().date() - timedelta(days=selected_days))
 
@@ -951,62 +922,68 @@ with tab_reserves:
     )
 
 
-# --- VAHELEHT 4: NORD POOL UMM TEATED JA VÕIMSUSED ---
+# --- VAHELEHT 4: NORD POOL UMM TEATED (REAALAJA XML/RSS VOOG) ---
 with tab_umm:
     st.markdown(
-        "### ⚠️ Viimase nädala olulised turuteated ja võimsuspiirangud (Nord Pool UMM)"
+        "### ⚠️ Nord Pool REMIT UMM reaalaja turuteated ja võimsuspiirangud"
     )
     st.write(
-        "Ülevaade regiooni **Rootsi (SE4), Soome (FI), Eesti (EE), Läti (LV) ja Leedu (LT)** ülekandeliinide ja elektrijaamade võimsuspiirangutest. Tabel toob selgelt esile installeeritud võimsuse, kättesaadava võimsuse ja turult eemaloleva võimsuse."
+        "Allpool kuvatakse otse Nord Pooli ametlikust teabevoost (RSS/XML) pärinevad reaalajas teated regiooni **EE, FI, LV, LT ja SE4** kohta. Igal real on täpne objekti kirjeldus, turult väljas olev võimsus ja otselink teatele."
     )
 
-    # Otseteed Nord Pooli reaalaja filtritele
-    st.markdown("##### 🔗 Reaalaja kiirfiltrid Nord Pooli portaalis:")
+    # Otseteed Nord Pooli ametlikule filtritud portaalile
+    st.markdown("##### 🔗 Ava ametlikud reaalaja teated Nord Pooli portaalis:")
     col_l1, col_l2, col_l3, col_l4, col_l5 = st.columns(5)
     with col_l1:
-        st.link_button("🇪🇪 Eesti teated (EE)", "https://umm.nordpoolgroup.com/#/messages?areas=EE")
+        st.link_button("🇪🇪 Eesti (EE)", "https://umm.nordpoolgroup.com/#/messages?areas=EE")
     with col_l2:
-        st.link_button("🇫🇮 Soome teated (FI)", "https://umm.nordpoolgroup.com/#/messages?areas=FI")
+        st.link_button("🇫🇮 Soome (FI)", "https://umm.nordpoolgroup.com/#/messages?areas=FI")
     with col_l3:
-        st.link_button("🇱🇻 Läti teated (LV)", "https://umm.nordpoolgroup.com/#/messages?areas=LV")
+        st.link_button("🇱🇻 Läti (LV)", "https://umm.nordpoolgroup.com/#/messages?areas=LV")
     with col_l4:
-        st.link_button("🇱🇹 Leedu teated (LT)", "https://umm.nordpoolgroup.com/#/messages?areas=LT")
+        st.link_button("🇱🇹 Leedu (LT)", "https://umm.nordpoolgroup.com/#/messages?areas=LT")
     with col_l5:
         st.link_button("🇸🇪 Lõuna-Rootsi (SE4)", "https://umm.nordpoolgroup.com/#/messages?areas=SE4")
 
     st.markdown("---")
 
     if not df_umms.empty:
-        all_unique_regions = set()
-        for r_str in df_umms["Regioon"]:
-            for r in r_str.split(", "):
-                all_unique_regions.add(r.strip())
+        all_unique_regions = sorted(df_umms["Regioon"].unique())
 
         col_uf1, col_uf2 = st.columns([1, 3])
         with col_uf1:
             chosen_reg = st.selectbox(
-                "Filtreeri piirkonna järgi:",
-                ["Kõik"] + sorted(list(all_unique_regions)),
+                "Filtreeri regiooni järgi:",
+                ["Kõik"] + list(all_unique_regions),
             )
 
         df_display_umm = (
             df_umms
             if chosen_reg == "Kõik"
-            else df_umms[df_umms["Regioon"].str.contains(chosen_reg, na=False)]
+            else df_umms[df_umms["Regioon"] == chosen_reg]
         )
 
         st.dataframe(
-            df_display_umm,
+            df_display_umm[
+                [
+                    "Avaldatud",
+                    "Regioon",
+                    "Objekti kirjeldus / Pealkiri",
+                    "Turult VÄLJAS (MW)",
+                    "Kirjeldus",
+                    "Link",
+                ]
+            ],
             column_config={
-                "Objekti täpne nimetus": st.column_config.TextColumn(
-                    "Objekt ja tehniline kirjeldus", width="medium"
+                "Objekti kirjeldus / Pealkiri": st.column_config.TextColumn(
+                    "Objekt ja teade", width="medium"
                 ),
                 "Turult VÄLJAS (MW)": st.column_config.TextColumn(
                     "Turult väljas (MW)", help="Võimsus, mis ei ole turule kättesaadav"
                 ),
                 "Link": st.column_config.LinkColumn(
                     "Algallikas / Teade",
-                    help="Ava ametlik teade Nord Pooli UMM portaalis",
+                    help="Ava ametlik teade Nord Pooli portaalis",
                     display_text="Ava UMM teade ↗",
                 ),
             },
@@ -1014,10 +991,10 @@ with tab_umm:
             use_container_width=True,
         )
     else:
-        st.info("Viimase nädala jooksul uusi UMM teateid ei leitud.")
+        st.info("Hetkel ei ole Nord Pooli teabevoos aktiivseid uusi võimsuspiirangute teateid piirkonnas EE, FI, LV, LT, SE4.")
 
     st.caption(
-        "📍 **Allikas:** Nord Pool REMIT UMM platvorm (`umm.nordpoolgroup.com`)."
+        "📍 **Allikas:** Nord Pool REMIT UMM reaalaja teabevoog (`umm.nordpoolgroup.com/api/feed/rss`)."
     )
 
 
