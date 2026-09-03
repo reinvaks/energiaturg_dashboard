@@ -522,6 +522,7 @@ if not df_short_ee.empty:
 st.subheader("Hetketuru hinnatasemed ja jooksvad näitajad")
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
+# KPI 1: Elektri TÄNASE PÄEVA KESKMINE
 with kpi1:
     if today_ee_mean is not None:
         delta_str = None
@@ -553,7 +554,7 @@ with kpi2:
         st.metric(
             label="GET Baltic (BGSI)",
             value=f"{last_gb:.1f} €/MWh",
-            delta=f"{delta_gb:+.2f} € (päev)",
+            delta=f"{delta_gb:+.1f} € (päev)",
         )
     else:
         st.metric(label="GET Baltic", value="Pole saadaval")
@@ -568,7 +569,7 @@ with kpi3:
         st.metric(
             label="Dutch TTF maagaas",
             value=f"{last_ttf:.1f} €/MWh",
-            delta=f"{delta_ttf:+.2f} € (päev)",
+            delta=f"{delta_ttf:+.1f} € (päev)",
         )
     else:
         st.metric(label="Dutch TTF", value="Pole saadaval")
@@ -585,7 +586,7 @@ with kpi4:
         st.metric(
             label="Brent toornafta",
             value=f"{last_brent:.1f} $/bbl",
-            delta=f"{delta_brent:+.2f} $ (päev)",
+            delta=f"{delta_brent:+.1f} $ (päev)",
         )
     else:
         st.metric(label="Brent nafta", value="Pole saadaval")
@@ -600,7 +601,7 @@ with kpi5:
         st.metric(
             label="EU ETS kvoot (EUA)",
             value=f"{last_co2:.1f} €/tCO₂",
-            delta=f"{delta_co2:+.2f} € (päev)",
+            delta=f"{delta_co2:+.1f} € (päev)",
         )
     else:
         st.metric(label="EU ETS kvoot", value="Pole saadaval")
@@ -917,7 +918,7 @@ with tab_gen:
     if is_live_entsoe:
         st.success("🟢 Reaalajas ühendatud ENTSO-E Transparency REST API-ga")
     else:
-        st.info("ℹ️ Kuvatakse Eesti tootmissüsteemi struktuurne jaotus. Reaalaja otseliideseks lisa streamlit saladustesse `ENTSOE_API_KEY`.")
+        st.info("ℹ️ Kuvatakse Eesti tootmissüsteemi struktuurne jaotus. Reaalaja otseliideseks lisa Streamliti saladustesse `ENTSOE_API_KEY`.")
 
     if not df_generation.empty:
         tech_cols = [c for c in df_generation.columns if c != "time_local"]
@@ -1004,7 +1005,7 @@ with tab_gen:
 
 # --- VAHELEHT 3: GAASITURG & HOIDLAD (BALTI / INČUKALNS) ---
 with tab_gas:
-    st.markdown("### 🔥 Maagaasi hinnad, hoidlad ja Balti ülekandevõrgud")
+    st.markdown("### 🔥 Maagaasi hinnad ja hoidlate täituvus")
 
     # 1. Hoidlate tegelik hetkeseis (EL27 vs Inčukalns)
     col_sto1, col_sto2, col_sto3, col_sto4 = st.columns(4)
@@ -1037,92 +1038,8 @@ with tab_gas:
 
     st.markdown("---")
 
-    # 2. Balti riikide ja Soome gaasivõrk, LNG terminalid ja Inčukalnsi hoidla
-    st.markdown("#### 🗺️ Eesti, Läti, Leedu ja Soome gaasitaristu, hoidlad ning LNG terminalid")
-
-    nodes_baltic = pd.DataFrame([
-        {"name": "Inčukalns UGS (Läti)", "type": "Täituvus: 11.2 TWh / 24.4 TWh (45.8%)", "lat": 57.10, "lon": 24.68, "color": "#d62728", "size": 16, "cat": "Hoidla"},
-        {"name": "Klaipėda LNG (Independence)", "type": "FSRU terminal (Leedu)", "lat": 55.66, "lon": 21.14, "color": "#1f77b4", "size": 13, "cat": "LNG"},
-        {"name": "Inkoo LNG (Exemplar)", "type": "FSRU terminal (Soome)", "lat": 60.02, "lon": 23.92, "color": "#1f77b4", "size": 13, "cat": "LNG"},
-        {"name": "Paldiski kompressorjaam", "type": "Balticconnector sõlm (EE)", "lat": 59.35, "lon": 24.05, "color": "#ff7f0e", "size": 10, "cat": "Sõlm"},
-        {"name": "Karksi mõõtejaam", "type": "Eesti-Läti piiripunkt", "lat": 58.11, "lon": 25.56, "color": "#2ca02c", "size": 9, "cat": "Sõlm"},
-        {"name": "Kiemėnai mõõtejaam", "type": "Läti-Leedu piiripunkt (ELLI)", "lat": 56.28, "lon": 24.45, "color": "#2ca02c", "size": 9, "cat": "Sõlm"},
-        {"name": "Jauniūnai kompressorjaam", "type": "GIPL ühendussõlm (Leedu)", "lat": 54.94, "lon": 24.99, "color": "#ff7f0e", "size": 10, "cat": "Sõlm"},
-    ])
-
-    pipelines_baltic = [
-        {"name": "Balticconnector (Inkoo ↔ Paldiski)", "coords": [(60.02, 23.92), (59.35, 24.05)], "color": "#008080", "width": 4},
-        {"name": "Eesti magistraal (Paldiski ↔ Karksi)", "coords": [(59.35, 24.05), (58.80, 24.70), (58.11, 25.56)], "color": "#2ca02c", "width": 3.5},
-        {"name": "Läti transiit (Karksi ↔ Inčukalns UGS)", "coords": [(58.11, 25.56), (57.50, 25.20), (57.10, 24.68)], "color": "#d62728", "width": 4},
-        {"name": "ELLI (Inčukalns ↔ Kiemėnai ↔ Leedu)", "coords": [(57.10, 24.68), (56.28, 24.45), (55.60, 24.20)], "color": "#ff7f0e", "width": 3.5},
-        {"name": "Leedu magistraal (Klaipėda ↔ Jauniūnai)", "coords": [(55.66, 21.14), (55.40, 22.80), (54.94, 24.99)], "color": "#1f77b4", "width": 3.5},
-        {"name": "GIPL (Jauniūnai ↔ Poola suund)", "coords": [(54.94, 24.99), (54.10, 23.40)], "color": "#9467bd", "width": 3.5},
-    ]
-
-    fig_baltic = go.Figure()
-
-    for pipe in pipelines_baltic:
-        lats = [c[0] for c in pipe["coords"]]
-        lons = [c[1] for c in pipe["coords"]]
-        fig_baltic.add_trace(
-            go.Scattergeo(
-                lat=lats,
-                lon=lons,
-                mode="lines",
-                name=pipe["name"],
-                line=dict(width=pipe["width"], color=pipe["color"]),
-                hoverinfo="text",
-                text=pipe["name"],
-            )
-        )
-
-    fig_baltic.add_trace(
-        go.Scattergeo(
-            lat=nodes_baltic["lat"],
-            lon=nodes_baltic["lon"],
-            mode="markers+text",
-            marker=dict(
-                size=nodes_baltic["size"],
-                color=nodes_baltic["color"],
-                line=dict(width=1.5, color="#ffffff"),
-            ),
-            text=nodes_baltic["name"],
-            textposition="top right",
-            textfont=dict(family="Arial, sans-serif", size=11, color="#111111"),
-            hoverinfo="text",
-            hovertext=nodes_baltic["name"] + "<br>" + nodes_baltic["type"],
-            showlegend=False,
-        )
-    )
-
-    fig_baltic.update_geos(
-        scope="europe",
-        center=dict(lat=57.5, lon=24.5),
-        projection_scale=5.5,
-        showcoastlines=True,
-        coastlinecolor="#aaaaaa",
-        showland=True,
-        landcolor="#f8f9fa",
-        showocean=True,
-        oceancolor="#eef3f8",
-        showcountries=True,
-        countrycolor="#cccccc",
-        countrywidth=1,
-        fitbounds=False,
-    )
-    fig_baltic.update_layout(
-        title="Balti riikide ja Soome gaasivõrk: Inčukalns UGS, Balticconnector, GIPL ja LNG terminalid",
-        margin=dict(r=0, t=40, l=0, b=0),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=9)),
-    )
-    st.plotly_chart(fig_baltic, use_container_width=True)
-
-    st.caption("📍 **Allikad:** Conexus Baltic Grid / Amber Grid / Gasgrid Finland / Elering Gaas.")
-
-    st.markdown("---")
-
-    # 3. Turuhinnad: TTF ja GET Baltic
-    st.markdown("#### 3. Maagaasi võrdlushinnad: Dutch TTF vs GET Baltic (BGSI)")
+    # 2. Turuhinnad: TTF ja GET Baltic
+    st.markdown("#### 2. Maagaasi võrdlushinnad: Dutch TTF vs GET Baltic (BGSI)")
     if not df_ttf_filtered.empty and not df_getbaltic_filtered.empty:
         fig_gas = go.Figure()
         fig_gas.add_trace(
@@ -1500,8 +1417,8 @@ with tab_custom:
                     "Turg / Segment": "🛢️ Toornafta (Brent)",
                     "Mõõtühik": "$/bbl",
                     "Aritmeetiline keskmine": f"{brent_mean:.1f}",
-                    "Madalaim päeva keskmine": f"{brent_min_row['Close']:.1f} ({brent_min_row['Date'].strftime('%d.%m.%Y')})",
-                    "Kõrgeim päeva keskmine": f"{brent_max_row['Close']:.1f} ({brent_max_row['Date'].strftime('%d.%m.%Y')})",
+                    "Madalaim päeva keskmine": f"{brent_min_row['Close']:.1f} ({brent_min_row['date'].strftime('%d.%m.%Y')})",
+                    "Kõrgeim päeva keskmine": f"{brent_max_row['Close']:.1f} ({brent_max_row['date'].strftime('%d.%m.%Y')})",
                 })
 
         # 5. EU ETS EUA
