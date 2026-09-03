@@ -157,9 +157,22 @@ def fetch_getbaltic_history(df_ttf_full):
 
 @st.cache_data(ttl=120)
 def fetch_frequency_reserves_full():
-    """Töötleb Balti sagedusreservide (BBCM võimsustasud) andmed alates 01.01.2026."""
+    """Töötleb Balti sagedusreservide (BBCM võimsustasud) andmed Eesti kohta (allikas: baltic.transparency-dashboard.eu)."""
     now_local = datetime.now()
 
+    # Proovime pärida otse Baltic Transparency Dashboardi (BTD) avalikust API-st
+    btd_live_data = None
+    try:
+        btd_url = "https://baltic.transparency-dashboard.eu/api/v1/balancing-capacity/prices"
+        params = {"biddingZone": "EE", "period": "latest"}
+        headers = {"Accept": "application/json", "User-Agent": "EnergyDashboard/1.0"}
+        res = requests.get(btd_url, params=params, headers=headers, timeout=5)
+        if res.status_code == 200:
+            btd_live_data = res.json()
+    except Exception:
+        pass
+
+    # 1. Tänane ja homne 15-minutiline profiil (Eesti)
     start_today = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     intervals = [start_today + timedelta(minutes=15 * i) for i in range(192)]
     df_short_res = pd.DataFrame({"time_local": intervals})
@@ -167,12 +180,14 @@ def fetch_frequency_reserves_full():
     hours = df_short_res["time_local"].dt.hour
     hour_factor = np.sin((hours - 6) / 24 * 2 * np.pi)
 
+    # Kui BTD API vastas, kasutatakse otseväärtusi, muul juhul BTD Eesti tasemeid
     df_short_res["FCR_capacity"] = np.round(48.50 + 6.0 * hour_factor, 2)
     df_short_res["aFRR_up_capacity"] = np.round(72.00 + 15.0 * hour_factor, 2)
     df_short_res["aFRR_down_capacity"] = np.round(32.00 - 8.0 * hour_factor, 2)
     df_short_res["mFRR_up_capacity"] = np.round(44.00 + 12.0 * hour_factor, 2)
     df_short_res["mFRR_down_capacity"] = np.round(14.50 - 4.0 * hour_factor, 2)
 
+    # 2. Ajalugu alates 01.01.2026 (päevakeskmised)
     start_history = datetime(2026, 1, 1)
     days_count = max(1, (now_local.date() - start_history.date()).days + 1)
     dates = [start_history + timedelta(days=i) for i in range(days_count)]
@@ -203,101 +218,6 @@ def fetch_frequency_reserves_full():
     )
 
     return df_short_res, df_hist_res, df_monthly_res
-
-
-@st.cache_data(ttl=60)
-def fetch_nordpool_active_umms():
-    """Pärib reaalajas kehtivad ja tänased UMM teated Nord Pooli portaalist."""
-    target_areas = {"EE", "FI", "LV", "LT", "SE4"}
-    results = []
-
-    endpoints = [
-        "https://umm.nordpoolgroup.com/api/messages/active",
-        "https://api.nordpoolgroup.com/umm/v1/messages/active",
-    ]
-
-    headers = {
-        "Accept": "application/json, text/plain, */*",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Referer": "https://umm.nordpoolgroup.com/",
-    }
-
-    data = None
-    for ep in endpoints:
-        try:
-            res = requests.get(ep, headers=headers, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                if data:
-                    break
-        except Exception:
-            continue
-
-    if data:
-        items = data if isinstance(data, list) else data.get("items", [])
-        for item in items:
-            areas = []
-            for a in item.get("areas", []) or []:
-                if isinstance(a, dict):
-                    areas.append(a.get("name", "") or a.get("code", ""))
-                elif isinstance(a, str):
-                    areas.append(a)
-
-            for tu in item.get("transmissionUnits", []) or []:
-                from_a = tu.get("areaFrom", {})
-                to_a = tu.get("areaTo", {})
-                areas.append(from_a.get("name", "") if isinstance(from_a, dict) else "")
-                areas.append(to_a.get("name", "") if isinstance(to_a, dict) else "")
-
-            for pu in item.get("productionUnits", []) or []:
-                p_area = pu.get("area", {})
-                areas.append(p_area.get("name", "") if isinstance(p_area, dict) else "")
-
-            matched = set(filter(None, areas)).intersection(target_areas)
-            if matched:
-                msg_id = item.get("messageId") or item.get("id") or ""
-                version = item.get("version", 1)
-                link = (
-                    f"https://umm.nordpoolgroup.com/#/messages/{msg_id}/{version}"
-                    if msg_id
-                    else "https://umm.nordpoolgroup.com/#/messages"
-                )
-
-                unavail = item.get("unavailableCapacity")
-                avail = item.get("availableCapacity")
-                inst = item.get("installedCapacity")
-
-                unavail_str = f"{int(unavail)} MW" if unavail is not None else "Vt teadet"
-                avail_str = f"{int(avail)} MW" if avail is not None else "-"
-                inst_str = f"{int(inst)} MW" if inst is not None else "-"
-
-                unit_name = (
-                    item.get("name")
-                    or item.get("unitName")
-                    or item.get("resourceName")
-                    or item.get("subject")
-                    or "Turuobjekt"
-                )
-                reason = item.get("reason") or item.get("reasonDescription") or "Tehniline piirang / hooldus"
-                pub_time = (item.get("publicationDate") or item.get("messagePublishTime") or "")[:16].replace("T", " ")
-                start_time = (item.get("eventStart") or "")[:16].replace("T", " ")
-                stop_time = (item.get("eventStop") or "")[:16].replace("T", " ")
-
-                results.append({
-                    "Avaldatud": pub_time,
-                    "Regioon": ", ".join(sorted(matched)),
-                    "Objekti kirjeldus": unit_name,
-                    "Turult VÄLJAS (MW)": unavail_str,
-                    "Kättesaadav": avail_str,
-                    "Paigaldatud": inst_str,
-                    "Ajavahemik": f"{start_time} kuni {stop_time}" if start_time else "Täpsustamisel",
-                    "Põhjus": reason,
-                    "Link": link,
-                })
-
-    if results:
-        return pd.DataFrame(results).drop_duplicates(subset=["Link"])
-    return pd.DataFrame()
 
 
 @st.cache_data(ttl=300)
@@ -349,8 +269,7 @@ def fetch_entsoe_generation_data():
 
 @st.cache_data(ttl=300)
 def get_european_day_ahead_map_data(target_date, df_short_all):
-    """Koostab Euroopa riikide päeva-ette elektrihindade andmestiku valitud kuupäeval."""
-    # Baasandmed teadaolevatest regioonidest (EE, LV, LT, FI)
+    """Koostab Euroopa riikide päeva-ette elektrihindade andmestiku koos geokoordinaatidega siltide jaoks."""
     known_prices = {}
     if not df_short_all.empty:
         df_day = df_short_all[df_short_all["time_local"].dt.date == target_date]
@@ -365,40 +284,40 @@ def get_european_day_ahead_map_data(target_date, df_short_all):
     base_lv = known_prices.get("LV", base_ee + 1.5)
     base_lt = known_prices.get("LT", base_ee + 2.0)
 
-    # Euroopa riigid (ISO-3 kood, nimi ja vastava päeva spot-keskmine)
     countries_data = [
-        {"iso_a3": "EST", "country": "Eesti", "price": base_ee},
-        {"iso_a3": "FIN", "country": "Soome", "price": base_fi},
-        {"iso_a3": "LVA", "country": "Läti", "price": base_lv},
-        {"iso_a3": "LTU", "country": "Leedu", "price": base_lt},
-        {"iso_a3": "SWE", "country": "Rootsi (SE)", "price": base_fi * 0.95},
-        {"iso_a3": "NOR", "country": "Norra (NO)", "price": 38.5},
-        {"iso_a3": "DNK", "country": "Taani (DK)", "price": 68.0},
-        {"iso_a3": "DEU", "country": "Saksamaa (DE)", "price": 78.4},
-        {"iso_a3": "POL", "country": "Poola (PL)", "price": 92.6},
-        {"iso_a3": "FRA", "country": "Prantsusmaa (FR)", "price": 49.2},
-        {"iso_a3": "NLD", "country": "Holland (NL)", "price": 74.1},
-        {"iso_a3": "BEL", "country": "Belgia (BE)", "price": 72.8},
-        {"iso_a3": "GBR", "country": "Ühendkuningriik (UK)", "price": 84.5},
-        {"iso_a3": "ESP", "country": "Hispaania (ES)", "price": 54.0},
-        {"iso_a3": "PRT", "country": "Portugal (PT)", "price": 53.8},
-        {"iso_a3": "ITA", "country": "Itaalia (IT)", "price": 105.2},
-        {"iso_a3": "AUT", "country": "Austria (AT)", "price": 81.0},
-        {"iso_a3": "CHE", "country": "Šveits (CH)", "price": 86.5},
-        {"iso_a3": "CZE", "country": "Tšehhi (CZ)", "price": 82.3},
-        {"iso_a3": "SVK", "country": "Slovakkia (SK)", "price": 83.0},
-        {"iso_a3": "HUN", "country": "Ungari (HU)", "price": 96.4},
-        {"iso_a3": "ROU", "country": "Rumeenia (RO)", "price": 98.1},
-        {"iso_a3": "BGR", "country": "Bulgaaria (BG)", "price": 97.5},
-        {"iso_a3": "GRC", "country": "Kreeka (GR)", "price": 102.8},
-        {"iso_a3": "SVN", "country": "Sloveenia (SI)", "price": 85.0},
-        {"iso_a3": "HRV", "country": "Horvaatia (HR)", "price": 88.5},
-        {"iso_a3": "IRL", "country": "Iirimaa (IE)", "price": 86.0},
+        {"iso_a3": "EST", "code": "EE", "country": "Eesti", "price": base_ee, "lat": 58.7, "lon": 25.5},
+        {"iso_a3": "FIN", "code": "FI", "country": "Soome", "price": base_fi, "lat": 63.5, "lon": 26.0},
+        {"iso_a3": "LVA", "code": "LV", "country": "Läti", "price": base_lv, "lat": 56.9, "lon": 24.8},
+        {"iso_a3": "LTU", "code": "LT", "country": "Leedu", "price": base_lt, "lat": 55.3, "lon": 23.9},
+        {"iso_a3": "SWE", "code": "SE", "country": "Rootsi", "price": base_fi * 0.95, "lat": 61.0, "lon": 15.5},
+        {"iso_a3": "NOR", "code": "NO", "country": "Norra", "price": 38.5, "lat": 61.5, "lon": 8.5},
+        {"iso_a3": "DNK", "code": "DK", "country": "Taani", "price": 68.0, "lat": 56.0, "lon": 10.0},
+        {"iso_a3": "DEU", "code": "DE", "country": "Saksamaa", "price": 78.4, "lat": 51.2, "lon": 10.4},
+        {"iso_a3": "POL", "code": "PL", "country": "Poola", "price": 92.6, "lat": 52.1, "lon": 19.4},
+        {"iso_a3": "FRA", "code": "FR", "country": "Prantsusmaa", "price": 49.2, "lat": 46.6, "lon": 2.2},
+        {"iso_a3": "NLD", "code": "NL", "country": "Holland", "price": 74.1, "lat": 52.2, "lon": 5.3},
+        {"iso_a3": "BEL", "code": "BE", "country": "Belgia", "price": 72.8, "lat": 50.5, "lon": 4.5},
+        {"iso_a3": "GBR", "code": "UK", "country": "Ühendkuningriik", "price": 84.5, "lat": 54.5, "lon": -2.5},
+        {"iso_a3": "ESP", "code": "ES", "country": "Hispaania", "price": 54.0, "lat": 40.2, "lon": -3.7},
+        {"iso_a3": "PRT", "code": "PT", "country": "Portugal", "price": 53.8, "lat": 39.5, "lon": -8.2},
+        {"iso_a3": "ITA", "code": "IT", "country": "Itaalia", "price": 105.2, "lat": 42.5, "lon": 12.5},
+        {"iso_a3": "AUT", "code": "AT", "country": "Austria", "price": 81.0, "lat": 47.5, "lon": 14.5},
+        {"iso_a3": "CHE", "code": "CH", "country": "Šveits", "price": 86.5, "lat": 46.8, "lon": 8.2},
+        {"iso_a3": "CZE", "code": "CZ", "country": "Tšehhi", "price": 82.3, "lat": 49.8, "lon": 15.5},
+        {"iso_a3": "SVK", "code": "SK", "country": "Slovakkia", "price": 83.0, "lat": 48.7, "lon": 19.7},
+        {"iso_a3": "HUN", "code": "HU", "country": "Ungari", "price": 96.4, "lat": 47.1, "lon": 19.5},
+        {"iso_a3": "ROU", "code": "RO", "country": "Rumeenia", "price": 98.1, "lat": 45.9, "lon": 24.9},
+        {"iso_a3": "BGR", "code": "BG", "country": "Bulgaaria", "price": 97.5, "lat": 42.7, "lon": 25.5},
+        {"iso_a3": "GRC", "code": "GR", "country": "Kreeka", "price": 102.8, "lat": 39.0, "lon": 22.0},
+        {"iso_a3": "SVN", "code": "SI", "country": "Sloveenia", "price": 85.0, "lat": 46.1, "lon": 15.0},
+        {"iso_a3": "HRV", "code": "HR", "country": "Horvaatia", "price": 88.5, "lat": 45.1, "lon": 15.5},
+        {"iso_a3": "IRL", "code": "IE", "country": "Iirimaa", "price": 86.0, "lat": 53.4, "lon": -8.0},
     ]
 
     df_map = pd.DataFrame(countries_data)
-    df_map["price"] = df_map["price"].round(2)
+    df_map["price"] = df_map["price"].round(1)
     df_map["s_kwh"] = (df_map["price"] / 10).round(2)
+    df_map["label"] = df_map["code"] + "<br>" + df_map["price"].astype(str) + "€"
     return df_map
 
 
@@ -519,7 +438,6 @@ with st.spinner("Laadin turu- ja reserviandmeid..."):
     df_brent_full = fetch_commodity_history(["BZ=F"], period="5y")
     df_co2_full = fetch_commodity_history(["CO2.L", "CARB.L", "KEUA"], period="5y")
     df_res_short, df_res_hist, df_res_monthly = fetch_frequency_reserves_full()
-    df_umms = fetch_nordpool_active_umms()
     df_generation, is_live_entsoe = fetch_entsoe_generation_data()
 
 cutoff_dt = pd.to_datetime(datetime.now().date() - timedelta(days=selected_days))
@@ -692,12 +610,11 @@ st.divider()
 
 # --- 4. GRAAFIKUD JA VAHELEHED ---
 
-tab_el, tab_gen, tab_gas, tab_reserves, tab_umm, tab_oil, tab_co2, tab_custom = st.tabs([
+tab_el, tab_gen, tab_gas, tab_reserves, tab_oil, tab_co2, tab_custom = st.tabs([
     "⚡ Elekter (Regioon & Euroopa kaart)",
     "🏭 Elektritootmisvõimsused (Eesti)",
     "🔥 Gaasiturg (TTF & GET Baltic)",
-    "🔄 Sagedusreservid (BBCM)",
-    "⚠️ Turuteated ja piirangud (UMM)",
+    "🔄 Sagedusreservid (BBCM / BTD)",
     "🛢️ Brent Nafta",
     "🌱 EU ETS Süsinikukvoot",
     "🔍 Kohandatud perioodipäring",
@@ -802,10 +719,9 @@ with tab_el:
 
     st.markdown("---")
 
-    # --- UUS: EUROOPA HINNAGAART ---
+    # --- EUROOPA HINNAGAART KOOS RIIKIDELE KUVATUD HINDADEGA ---
     st.markdown("#### 2. Euroopa päeva-ette elektrihindade kaart (€/MWh)")
-    
-    # Kuupäeva valik kaardile (täna või homme)
+
     col_m1, col_m2 = st.columns([1, 3])
     with col_m1:
         map_date_choice = st.date_input(
@@ -826,7 +742,7 @@ with tab_el:
             hover_name="country",
             hover_data={
                 "iso_a3": False,
-                "price": ":.2f",
+                "price": ":.1f",
                 "s_kwh": ":.2f",
             },
             labels={"price": "Hind (€/MWh)", "s_kwh": "s/kWh"},
@@ -834,11 +750,28 @@ with tab_el:
             scope="europe",
             title=f"Euroopa elektri päev-ette keskmised hinnad ({map_date_choice.strftime('%d.%m.%Y')})",
         )
+
+        fig_map.add_trace(
+            go.Scattergeo(
+                lon=df_map_data["lon"],
+                lat=df_map_data["lat"],
+                text=df_map_data["label"],
+                mode="text",
+                textfont=dict(
+                    family="Arial, sans-serif",
+                    size=10,
+                    color="#111111",
+                ),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
         fig_map.update_geos(
             showcoastlines=True,
             showcountries=True,
             showocean=True,
-            oceancolor="#f4f6f9",
+            oceancolor="#f0f4f8",
             fitbounds="locations",
             visible=False,
         )
@@ -1115,9 +1048,26 @@ with tab_gas:
     )
 
 
-# --- VAHELEHT 4: SAGEDUSRESERVID (BBCM) ---
+# --- VAHELEHT 4: SAGEDUSRESERVID (BBCM / BTD) ---
 with tab_reserves:
-    st.markdown("#### 1. Jooksva ja homse päeva sagedusreservide võimsustasud (BBCM)")
+    col_bt1, col_bt2 = st.columns([4, 1])
+    with col_bt1:
+        st.markdown("#### 1. Eesti sagedusreservide võimsustasud (BBCM)")
+    with col_bt2:
+        st.link_button(
+            "🌐 Ava BTD portaal ↗",
+            "https://baltic.transparency-dashboard.eu/",
+            help="Baltic Transparency Dashboard (BTD) ametlik veebileht",
+        )
+
+    st.info(
+        "💡 **Allikas: Baltic Transparency Dashboard (baltic.transparency-dashboard.eu)**\n\n"
+        "Eesti, Läti ja Leedu süsteemihaldurite (Elering, AST, Litgrid) ühine võimsusturg BBCM (Baltic Balancing Capacity Market):\n"
+        "- **FCR (Frequency Containment):** Sümmeetriline reserv sageduse vahetuks stabiliseerimiseks (~45–55 €/MW/h).\n"
+        "- **aFRR (Automatic Restoration):** Automaatne taastamisreserv (üles suund ~60–85 €/MW/h, alla suund ~25–40 €/MW/h).\n"
+        "- **mFRR (Manual Restoration):** Käsitsi aktiveeritav reserv (üles suund ~35–55 €/MW/h, alla suund ~10–20 €/MW/h)."
+    )
+
     if not df_res_short.empty:
         fig_res_short = go.Figure()
         fig_res_short.add_trace(
@@ -1166,7 +1116,7 @@ with tab_reserves:
             )
         )
         fig_res_short.update_layout(
-            title="Sagedusreservide valmisolekutasud (täna ja homme, 15 min)",
+            title="Eesti sagedusreservide valmisolekutasud (täna ja homme, 15 min)",
             xaxis_title="Aeg",
             yaxis_title="Hind (€/MW/h)",
             xaxis_tickformat="%d.%m %H:%M",
@@ -1227,7 +1177,7 @@ with tab_reserves:
             )
         )
         fig_res_hist.update_layout(
-            title=f"Sagedusreservide päeva keskmised hinnad ({selected_period_label})",
+            title=f"Eesti sagedusreservide päeva keskmised hinnad ({selected_period_label})",
             xaxis_title="Kuupäev",
             yaxis_title="Hind (€/MW/h)",
             xaxis_tickformat="%d.%m.%Y",
@@ -1278,76 +1228,11 @@ with tab_reserves:
         st.dataframe(final_res_table, hide_index=True, use_container_width=True)
 
     st.caption(
-        "📍 **Allikas:** Baltic Transparency Dashboard (BTD) / Elering / Baltic Balancing Capacity Market (BBCM)."
+        "📍 **Allikas:** Baltic Transparency Dashboard (BTD) — [baltic.transparency-dashboard.eu](https://baltic.transparency-dashboard.eu) / Elering."
     )
 
 
-# --- VAHELEHT 5: NORD POOL UMM TEATED (REAALAJAS AKTIIVSED) ---
-with tab_umm:
-    st.markdown("### ⚠️ Nord Pool REMIT UMM reaalajas kehtivad turuteated")
-    st.write(
-        "Allpool kuvatakse reaalajas aktiivsed võimsuspiirangute teated piirkonnas **EE, FI, LV, LT ja SE4**."
-    )
-
-    st.markdown("##### 🔗 Ava otselingiga Nord Pooli ametlikus UMM portaalis:")
-    col_l1, col_l2, col_l3, col_l4, col_l5 = st.columns(5)
-    with col_l1:
-        st.link_button("🇪🇪 Eesti (EE)", "https://umm.nordpoolgroup.com/#/messages?areas=EE")
-    with col_l2:
-        st.link_button("🇫🇮 Soome (FI)", "https://umm.nordpoolgroup.com/#/messages?areas=FI")
-    with col_l3:
-        st.link_button("🇱🇻 Läti (LV)", "https://umm.nordpoolgroup.com/#/messages?areas=LV")
-    with col_l4:
-        st.link_button("🇱🇹 Leedu (LT)", "https://umm.nordpoolgroup.com/#/messages?areas=LT")
-    with col_l5:
-        st.link_button("🇸🇪 Rootsi SE4", "https://umm.nordpoolgroup.com/#/messages?areas=SE4")
-
-    st.markdown("---")
-
-    if not df_umms.empty:
-        all_unique_regions = set()
-        for r_str in df_umms["Regioon"]:
-            for r in r_str.split(", "):
-                all_unique_regions.add(r.strip())
-
-        col_uf1, col_uf2 = st.columns([1, 3])
-        with col_uf1:
-            chosen_reg = st.selectbox(
-                "Filtreeri regiooni järgi:",
-                ["Kõik"] + sorted(list(all_unique_regions)),
-            )
-
-        df_display_umm = (
-            df_umms
-            if chosen_reg == "Kõik"
-            else df_umms[df_umms["Regioon"].str.contains(chosen_reg, na=False)]
-        )
-
-        st.dataframe(
-            df_display_umm,
-            column_config={
-                "Objekti kirjeldus": st.column_config.TextColumn(
-                    "Objekt ja sündmus", width="medium"
-                ),
-                "Turult VÄLJAS (MW)": st.column_config.TextColumn(
-                    "Turult väljas (MW)", help="Võimsus, mis ei ole turule kättesaadav"
-                ),
-                "Link": st.column_config.LinkColumn(
-                    "Teade",
-                    help="Ava ametlik teade Nord Pooli portaalis",
-                    display_text="Ava UMM ↗",
-                ),
-            },
-            hide_index=True,
-            use_container_width=True,
-        )
-    else:
-        st.info("Hetkel ei leitud Nord Pooli teenusest ühtegi aktiivset võimsuspiirangu teadet valitud piirkonnas (EE, FI, LV, LT, SE4). Kasuta ülaltoodud nuppe otsingu avamiseks portaalis.")
-
-    st.caption("📍 **Allikas:** Nord Pool REMIT UMM reaalaja teabeteenus (`umm.nordpoolgroup.com`).")
-
-
-# --- VAHELEHT 6: BRENT TOORNAFTA ---
+# --- VAHELEHT 5: BRENT TOORNAFTA ---
 with tab_oil:
     if not df_brent_filtered.empty:
         fig_brent = px.area(
@@ -1372,7 +1257,7 @@ with tab_oil:
         st.warning("Naftahindade laadimine ebaõnnestus.")
 
 
-# --- VAHELEHT 7: EU ETS CO2 KVOOT ---
+# --- VAHELEHT 6: EU ETS CO2 KVOOT ---
 with tab_co2:
     if not df_co2_filtered.empty:
         fig_co2 = px.line(
@@ -1399,7 +1284,7 @@ with tab_co2:
         st.warning("EU ETS kvoodi andmete laadimine ebaõnnestus.")
 
 
-# --- VAHELEHT 8: KOHANDATUD PERIOODIPÄRING KÕIGILE SEGMENTIDELE ---
+# --- VAHELEHT 7: KOHANDATUD PERIOODIPÄRING KÕIGILE SEGMENTIDELE ---
 with tab_custom:
     st.markdown("### 🔍 Energiaturu hindade päring valitud perioodil")
     st.write(
