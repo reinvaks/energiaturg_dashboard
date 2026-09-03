@@ -522,6 +522,7 @@ if not df_short_ee.empty:
 st.subheader("Hetketuru hinnatasemed ja jooksvad näitajad")
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
+# KPI 1: Elektri TÄNASE PÄEVA KESKMINE
 with kpi1:
     if today_ee_mean is not None:
         delta_str = None
