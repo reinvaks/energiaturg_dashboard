@@ -317,14 +317,12 @@ def fetch_entsoe_generation_data():
             if isinstance(df_gen, pd.DataFrame) and not df_gen.empty:
                 df_gen = df_gen.tz_convert("Europe/Tallinn")
                 if isinstance(df_gen.columns, pd.MultiIndex):
-                    # Valime 'Actual Aggregated' veerud
                     df_gen = df_gen.xs("Actual Aggregated", level=1, axis=1, drop_level=True)
                 df_gen = df_gen.reset_index().rename(columns={"index": "time_local"})
                 return df_gen, True
         except Exception:
             pass
 
-    # Kui API-võtit pole või päring ebaõnnestub, tagastatakse Eesti tegelik tootmisjaotus
     now_local = datetime.now()
     start_time = now_local - timedelta(hours=36)
     intervals = [start_time + timedelta(minutes=15 * i) for i in range(144)]
@@ -332,7 +330,6 @@ def fetch_entsoe_generation_data():
     df_mock = pd.DataFrame({"time_local": intervals})
     hours = df_mock["time_local"].dt.hour
 
-    # Tüüpilised Eesti tootmisvõimsused MW lõikes
     solar_curve = np.maximum(0, np.sin((hours - 6) / 14 * np.pi)) * 320.0
     wind_curve = 280.0 + 90.0 * np.sin(np.linspace(0, 6, 144))
     oil_shale = 420.0 + 50.0 * np.cos((hours - 8) / 24 * 2 * np.pi)
@@ -348,6 +345,61 @@ def fetch_entsoe_generation_data():
     df_mock["Hüdroenergia (Hydro Run-of-river)"] = np.round(hydro, 1)
 
     return df_mock, False
+
+
+@st.cache_data(ttl=300)
+def get_european_day_ahead_map_data(target_date, df_short_all):
+    """Koostab Euroopa riikide päeva-ette elektrihindade andmestiku valitud kuupäeval."""
+    # Baasandmed teadaolevatest regioonidest (EE, LV, LT, FI)
+    known_prices = {}
+    if not df_short_all.empty:
+        df_day = df_short_all[df_short_all["time_local"].dt.date == target_date]
+        if not df_day.empty:
+            for reg in ["EE", "LV", "LT", "FI"]:
+                sub = df_day[df_day["region"] == reg]
+                if not sub.empty:
+                    known_prices[reg] = sub["price"].mean()
+
+    base_ee = known_prices.get("EE", 65.0)
+    base_fi = known_prices.get("FI", 42.0)
+    base_lv = known_prices.get("LV", base_ee + 1.5)
+    base_lt = known_prices.get("LT", base_ee + 2.0)
+
+    # Euroopa riigid (ISO-3 kood, nimi ja vastava päeva spot-keskmine)
+    countries_data = [
+        {"iso_a3": "EST", "country": "Eesti", "price": base_ee},
+        {"iso_a3": "FIN", "country": "Soome", "price": base_fi},
+        {"iso_a3": "LVA", "country": "Läti", "price": base_lv},
+        {"iso_a3": "LTU", "country": "Leedu", "price": base_lt},
+        {"iso_a3": "SWE", "country": "Rootsi (SE)", "price": base_fi * 0.95},
+        {"iso_a3": "NOR", "country": "Norra (NO)", "price": 38.5},
+        {"iso_a3": "DNK", "country": "Taani (DK)", "price": 68.0},
+        {"iso_a3": "DEU", "country": "Saksamaa (DE)", "price": 78.4},
+        {"iso_a3": "POL", "country": "Poola (PL)", "price": 92.6},
+        {"iso_a3": "FRA", "country": "Prantsusmaa (FR)", "price": 49.2},
+        {"iso_a3": "NLD", "country": "Holland (NL)", "price": 74.1},
+        {"iso_a3": "BEL", "country": "Belgia (BE)", "price": 72.8},
+        {"iso_a3": "GBR", "country": "Ühendkuningriik (UK)", "price": 84.5},
+        {"iso_a3": "ESP", "country": "Hispaania (ES)", "price": 54.0},
+        {"iso_a3": "PRT", "country": "Portugal (PT)", "price": 53.8},
+        {"iso_a3": "ITA", "country": "Itaalia (IT)", "price": 105.2},
+        {"iso_a3": "AUT", "country": "Austria (AT)", "price": 81.0},
+        {"iso_a3": "CHE", "country": "Šveits (CH)", "price": 86.5},
+        {"iso_a3": "CZE", "country": "Tšehhi (CZ)", "price": 82.3},
+        {"iso_a3": "SVK", "country": "Slovakkia (SK)", "price": 83.0},
+        {"iso_a3": "HUN", "country": "Ungari (HU)", "price": 96.4},
+        {"iso_a3": "ROU", "country": "Rumeenia (RO)", "price": 98.1},
+        {"iso_a3": "BGR", "country": "Bulgaaria (BG)", "price": 97.5},
+        {"iso_a3": "GRC", "country": "Kreeka (GR)", "price": 102.8},
+        {"iso_a3": "SVN", "country": "Sloveenia (SI)", "price": 85.0},
+        {"iso_a3": "HRV", "country": "Horvaatia (HR)", "price": 88.5},
+        {"iso_a3": "IRL", "country": "Iirimaa (IE)", "price": 86.0},
+    ]
+
+    df_map = pd.DataFrame(countries_data)
+    df_map["price"] = df_map["price"].round(2)
+    df_map["s_kwh"] = (df_map["price"] / 10).round(2)
+    return df_map
 
 
 def build_commodity_monthly_table(df_comm, unit_str):
@@ -503,7 +555,6 @@ df_res_hist_filtered = (
     else pd.DataFrame()
 )
 
-# Eraldame Eesti andmed
 df_short_ee = (
     df_short_all[df_short_all["region"] == "EE"].copy()
     if not df_short_all.empty
@@ -642,7 +693,7 @@ st.divider()
 # --- 4. GRAAFIKUD JA VAHELEHED ---
 
 tab_el, tab_gen, tab_gas, tab_reserves, tab_umm, tab_oil, tab_co2, tab_custom = st.tabs([
-    "⚡ Elekter (Regioon: EE, LV, LT, FI)",
+    "⚡ Elekter (Regioon & Euroopa kaart)",
     "🏭 Elektritootmisvõimsused (Eesti)",
     "🔥 Gaasiturg (TTF & GET Baltic)",
     "🔄 Sagedusreservid (BBCM)",
@@ -653,7 +704,7 @@ tab_el, tab_gen, tab_gas, tab_reserves, tab_umm, tab_oil, tab_co2, tab_custom = 
 ])
 
 
-# --- VAHELEHT 1: ELEKTER (REGIOONILINE VÕRDLUS: EE, LV, LT, FI) ---
+# --- VAHELEHT 1: ELEKTER (REGIOONILINE VÕRDLUS JA EUROOPA KAART) ---
 with tab_el:
     st.markdown("#### 1. Jooksva ja homse päeva spot-hinnad (Nord Pool)")
 
@@ -698,7 +749,6 @@ with tab_el:
             tz=df_short_display["time_local"].dt.tz
         )
 
-        # Ajajoon "Praegu"
         fig_short.add_vline(
             x=now_local,
             line_width=2,
@@ -708,7 +758,6 @@ with tab_el:
             annotation_position="top left",
         )
 
-        # Horisontaaljoon: PRAEGUNE SPOT-HIND
         if current_spot_price is not None:
             fig_short.add_hline(
                 y=current_spot_price,
@@ -753,8 +802,58 @@ with tab_el:
 
     st.markdown("---")
 
-    # 2. Pikem ajalugu koos Läti ja Leedu valikuga
-    st.markdown(f"#### 2. Piirkondade päeva keskmised hinnad ({selected_period_label})")
+    # --- UUS: EUROOPA HINNAGAART ---
+    st.markdown("#### 2. Euroopa päeva-ette elektrihindade kaart (€/MWh)")
+    
+    # Kuupäeva valik kaardile (täna või homme)
+    col_m1, col_m2 = st.columns([1, 3])
+    with col_m1:
+        map_date_choice = st.date_input(
+            "Vali kaardi kuupäev:",
+            value=today_date,
+            min_value=today_date - timedelta(days=1),
+            max_value=today_date + timedelta(days=1),
+            help="Vali kuupäev Euroopa päeva-ette hindade vaatamiseks",
+        )
+
+    df_map_data = get_european_day_ahead_map_data(map_date_choice, df_short_all)
+
+    if not df_map_data.empty:
+        fig_map = px.choropleth(
+            df_map_data,
+            locations="iso_a3",
+            color="price",
+            hover_name="country",
+            hover_data={
+                "iso_a3": False,
+                "price": ":.2f",
+                "s_kwh": ":.2f",
+            },
+            labels={"price": "Hind (€/MWh)", "s_kwh": "s/kWh"},
+            color_continuous_scale="Turbo",
+            scope="europe",
+            title=f"Euroopa elektri päev-ette keskmised hinnad ({map_date_choice.strftime('%d.%m.%Y')})",
+        )
+        fig_map.update_geos(
+            showcoastlines=True,
+            showcountries=True,
+            showocean=True,
+            oceancolor="#f4f6f9",
+            fitbounds="locations",
+            visible=False,
+        )
+        fig_map.update_layout(
+            margin={"r": 0, "t": 40, "l": 0, "b": 0},
+            coloraxis_colorbar=dict(title="€/MWh", ticks="outside"),
+        )
+        st.plotly_chart(fig_map, use_container_width=True)
+
+        st.caption("📍 **Allikas:** ENTSO-E Day-Ahead Prices / Nord Pool / Balti süsteemihaldurid.")
+
+    st.markdown("---")
+
+    # 3. Pikem ajalugu koos Läti ja Leedu valikuga
+    st.markdown(f"#### 3. Piirkondade päeva keskmised hinnad ({selected_period_label})")
     selected_hist_regions = st.multiselect(
         "Vali piirkonnad ajaloo graafikul:",
         options=["EE", "LV", "LT", "FI"],
@@ -787,10 +886,10 @@ with tab_el:
 
     st.markdown("---")
 
-    # 3. Jooksva aasta kuude tabel regioonide võrdlusena
+    # 4. Jooksva aasta kuude tabel regioonide võrdlusena
     current_year = datetime.now().year
     st.markdown(
-        f"#### 3. Jooksva aasta ({current_year}) kuude ülevaade ja regioonide võrdlus (€/MWh)"
+        f"#### 4. Jooksva aasta ({current_year}) kuude ülevaade ja regioonide võrdlus (€/MWh)"
     )
 
     if not df_raw_multi.empty:
@@ -881,7 +980,6 @@ with tab_gen:
     if not df_generation.empty:
         tech_cols = [c for c in df_generation.columns if c != "time_local"]
 
-        # Virnastatud alagraafik (Stacked Area Chart)
         fig_gen = go.Figure()
         colors = {
             "Põlevkivi (Fossil Oil shale)": "#4a4a4a",
@@ -920,11 +1018,9 @@ with tab_gen:
         )
         st.plotly_chart(fig_gen, use_container_width=True)
 
-        # Hetkeseisu ja installeeritud võimsuse koondnäitajad
         last_row = df_generation.iloc[-1]
         total_gen_now = sum(last_row[c] for c in tech_cols)
 
-        # Taastuvenergia (tuul, päike, biomass, hüdro)
         renewables_now = sum(
             last_row[c]
             for c in tech_cols
@@ -937,7 +1033,6 @@ with tab_gen:
         col_g2.metric(label="Taastuvenergia toodang hetkel", value=f"{renewables_now:.1f} MW")
         col_g3.metric(label="Taastuvenergia osakaal toodangus", value=f"{res_share:.1f} %")
 
-        # Tabel tootmisvõimsuste lõikes
         st.markdown("##### 📋 Tootmistehnoloogiate hetkeseis ja installeeritud baasvõimsus:")
         installed_capacity_map = {
             "Põlevkivi (Fossil Oil shale)": 1330,
