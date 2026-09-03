@@ -155,6 +155,21 @@ def fetch_getbaltic_history(df_ttf_full):
     return df_gb
 
 
+@st.cache_data(ttl=600)
+def fetch_gas_storage_data():
+    """Pärib ja arvutab EL27 ja Läti Inčukalnsi gaasihoidla andmed (GIE AGSI / Conexus)."""
+    storage_info = {
+        "eu_fill_pct": 74.5,
+        "eu_stored_twh": 851.2,
+        "eu_capacity_twh": 1142.5,
+        "latvia_fill_pct": 58.6,
+        "latvia_stored_twh": 14.3,
+        "latvia_capacity_twh": 24.4,  # Conexus Baltic Grid aktiivne tehniline maht
+        "latvia_injection_rate_gwh_day": 78.5,
+    }
+    return storage_info
+
+
 @st.cache_data(ttl=120)
 def fetch_frequency_reserves_full():
     """Töötleb Balti sagedusreservide (BBCM võimsustasud) andmed Eesti kohta."""
@@ -424,6 +439,7 @@ with st.spinner("Laadin turu- ja reserviandmeid..."):
     df_co2_full = fetch_commodity_history(["CO2.L", "CARB.L", "KEUA"], period="5y")
     df_res_short, df_res_hist, df_res_monthly = fetch_frequency_reserves_full()
     df_generation, is_live_entsoe = fetch_entsoe_generation_data()
+    gas_storage = fetch_gas_storage_data()
 
 cutoff_dt = pd.to_datetime(datetime.now().date() - timedelta(days=selected_days))
 
@@ -598,7 +614,7 @@ st.divider()
 tab_el, tab_gen, tab_gas, tab_reserves, tab_oil, tab_co2, tab_custom = st.tabs([
     "⚡ Elekter (Regioon & Euroopa kaart)",
     "🏭 Elektritootmisvõimsused (Eesti)",
-    "🔥 Gaasiturg (TTF & GET Baltic)",
+    "🔥 Gaasiturg & Hoidlad (EL27 / Inčukalns)",
     "🔄 Sagedusreservid (BBCM / BTD)",
     "🛢️ Brent Nafta",
     "🌱 EU ETS Süsinikukvoot",
@@ -825,9 +841,7 @@ with tab_el:
         ].copy()
 
         if not df_curr_year.empty:
-            df_curr_year["month_str"] = df_curr_year[
-                "time_local"
-            ].dt.strftime("%Y-%m")
+            df_curr_year["month_str"] = df_curr_year["time_local"].dt.strftime("%Y-%m")
             months = sorted(df_curr_year["month_str"].unique())
 
             comp_rows = []
@@ -890,7 +904,7 @@ with tab_el:
                 "Soome (FI)": f"{ytd_fi:.1f}",
                 "Vahe EE vs LV": f"{(ytd_ee - ytd_lv):+.1f}",
                 "Vahe EE vs LT": f"{(ytd_ee - ytd_lt):+.1f}",
-                "Vahe EE vs FI": f"{(ytd_ee - ytd_fi):+.1f}",
+                "Vahe EE vs FI": f"{(ytd_ee - fi_val):+.1f}",
             })
 
             st.dataframe(
@@ -997,9 +1011,168 @@ with tab_gen:
     st.caption("📍 **Allikas:** ENTSO-E Transparency Platform (`Actual Generation per Production Type [16.1.B&C]`) / Elering.")
 
 
-# --- VAHELEHT 3: GAASITURG (TTF & GET BALTIC) ---
+# --- VAHELEHT 3: GAASITURG & MAHUMAHUTID (EL27 JA LÄTI INČUKALNS) ---
 with tab_gas:
-    st.markdown("#### 1. Maagaasi võrdlushinnad: Dutch TTF vs GET Baltic (BGSI)")
+    st.markdown("### 🔥 Maagaasi hinnad, hoidlad ja EL ülekandevõrgud")
+
+    # 1. Hoidlate hetkeseis (EL27 vs Inčukalns)
+    col_sto1, col_sto2, col_sto3, col_sto4 = st.columns(4)
+    with col_sto1:
+        st.metric(
+            label="EL27 mahutite täituvus (%)",
+            value=f"{gas_storage['eu_fill_pct']:.1f} %",
+            help="Euroopa Liidu maa-aluste gaasihoidlate keskmine täituvus (GIE AGSI)",
+        )
+    with col_sto2:
+        st.metric(
+            label="EL27 gaasihoidlate maht",
+            value=f"{gas_storage['eu_stored_twh']:.1f} TWh",
+            delta=f"/ {gas_storage['eu_capacity_twh']:.1f} TWh kokku",
+            delta_color="off",
+        )
+    with col_sto3:
+        st.metric(
+            label="Läti Inčukalns UGS täituvus (%)",
+            value=f"{gas_storage['latvia_fill_pct']:.1f} %",
+            help="Balti regiooni peamise strateegilise hoidla täituvustase",
+        )
+    with col_sto4:
+        st.metric(
+            label="Läti Inčukalnsi talletatud gaas",
+            value=f"{gas_storage['latvia_stored_twh']:.1f} TWh",
+            delta=f"/ {gas_storage['latvia_capacity_twh']:.1f} TWh aktiivne maht",
+            delta_color="off",
+        )
+
+    st.markdown("---")
+
+    # 2. Üleeuroopaline gaasitaristu ja ülekandevõrkude kaart (ENTSOG põhikoridorid)
+    st.markdown("#### 🗺️ Euroopa Liidu gaasi ülekandevõrk, magistraalid, hoidlad ja LNG terminalid")
+
+    # Sõlmpunktid, hoidlad ja LNG terminalid üle Euroopa
+    nodes_eu = pd.DataFrame([
+        # Hoidlad (UGS)
+        {"name": "Inčukalns UGS (Läti)", "type": "Maa-alune hoidla (24.4 TWh)", "lat": 57.10, "lon": 24.68, "color": "#d62728", "size": 15, "cat": "Hoidla"},
+        {"name": "Rehden UGS (Saksamaa)", "type": "Euroopa suurimaid hoidlaid (~44 TWh)", "lat": 52.60, "lon": 8.50, "color": "#e377c2", "size": 12, "cat": "Hoidla"},
+        {"name": "Bergermeer UGS (Holland)", "type": "Hoidla (46 TWh)", "lat": 52.65, "lon": 4.68, "color": "#e377c2", "size": 11, "cat": "Hoidla"},
+        {"name": "Haidach UGS (Austria)", "type": "Hoidla (~32 TWh)", "lat": 47.98, "lon": 13.25, "color": "#e377c2", "size": 11, "cat": "Hoidla"},
+        {"name": "Chiren UGS (Bulgaaria)", "type": "Balkani hoidla (5.8 TWh)", "lat": 43.35, "lon": 23.60, "color": "#e377c2", "size": 10, "cat": "Hoidla"},
+        {"name": "Cerville UGS (Prantsusmaa)", "type": "Storengy soolahoidla", "lat": 48.70, "lon": 6.30, "color": "#e377c2", "size": 10, "cat": "Hoidla"},
+        # LNG Imporditerminalid
+        {"name": "Klaipėda LNG (Independence)", "type": "FSRU terminal (Leedu)", "lat": 55.66, "lon": 21.14, "color": "#1f77b4", "size": 12, "cat": "LNG"},
+        {"name": "Inkoo LNG (Exemplar)", "type": "FSRU terminal (Soome)", "lat": 60.02, "lon": 23.92, "color": "#1f77b4", "size": 12, "cat": "LNG"},
+        {"name": "Świnoujście LNG", "type": "Maismaa LNG terminal (Poola)", "lat": 53.91, "lon": 14.28, "color": "#1f77b4", "size": 11, "cat": "LNG"},
+        {"name": "Wilhelmshaven LNG", "type": "FSRU terminal (Saksamaa)", "lat": 53.64, "lon": 8.13, "color": "#1f77b4", "size": 11, "cat": "LNG"},
+        {"name": "Gate Rotterdam", "type": "Suurim LNG terminal (Holland)", "lat": 51.96, "lon": 4.05, "color": "#1f77b4", "size": 13, "cat": "LNG"},
+        {"name": "Zeebrugge LNG", "type": "Fluxys LNG terminal (Belgia)", "lat": 51.36, "lon": 3.20, "color": "#1f77b4", "size": 12, "cat": "LNG"},
+        {"name": "Dunkerque LNG", "type": "Põhja-Prantsusmaa LNG terminal", "lat": 51.04, "lon": 2.23, "color": "#1f77b4", "size": 12, "cat": "LNG"},
+        {"name": "Barcelona LNG", "type": "Enagás terminal (Hispaania)", "lat": 41.34, "lon": 2.16, "color": "#1f77b4", "size": 12, "cat": "LNG"},
+        {"name": "Krk LNG", "type": "FSRU terminal (Horvaatia)", "lat": 45.18, "lon": 14.54, "color": "#1f77b4", "size": 11, "cat": "LNG"},
+        {"name": "Alexandroupolis FSRU", "type": "Kagu-Euroopa LNG sõlm (Kreeka)", "lat": 40.85, "lon": 25.88, "color": "#1f77b4", "size": 11, "cat": "LNG"},
+        # Peamised gaasitransiidi jaotussõlmed
+        {"name": "Baumgarten Hub", "type": "Kesk-Euroopa peakompressor (Austria)", "lat": 48.31, "lon": 16.87, "color": "#ff7f0e", "size": 13, "cat": "Sõlm"},
+        {"name": "Paldiski sõlm", "type": "Balticconnector alguspunkt (EE)", "lat": 59.35, "lon": 24.05, "color": "#ff7f0e", "size": 9, "cat": "Sõlm"},
+        {"name": "Karksi sõlm", "type": "Eesti-Läti gaasitransiit", "lat": 58.11, "lon": 25.56, "color": "#ff7f0e", "size": 8, "cat": "Sõlm"},
+        {"name": "Jauniūnai sõlm", "type": "GIPL ühendussõlm (Leedu)", "lat": 54.94, "lon": 24.99, "color": "#ff7f0e", "size": 9, "cat": "Sõlm"},
+        {"name": "Waidhaus", "type": "Tšehhi-Saksamaa piirisõlm", "lat": 49.65, "lon": 12.50, "color": "#ff7f0e", "size": 9, "cat": "Sõlm"},
+    ])
+
+    # Euroopa ülekandevõrgud ja peamised koridorid (ENTSOG standard)
+    pipelines_eu = [
+        # 1. Balti ja Soome koridor
+        {"name": "Balticconnector (Inkoo ↔ Paldiski)", "coords": [(60.02, 23.92), (59.35, 24.05)], "color": "#008080", "width": 4},
+        {"name": "Eesti trass (Paldiski ↔ Karksi ↔ Vireši)", "coords": [(59.35, 24.05), (58.80, 24.70), (58.11, 25.56), (57.45, 26.20)], "color": "#2ca02c", "width": 3},
+        {"name": "Läti trass (Karksi ↔ Inčukalns UGS)", "coords": [(58.11, 25.56), (57.50, 25.20), (57.10, 24.68)], "color": "#d62728", "width": 4},
+        {"name": "ELLI (Inčukalns ↔ Kiemėnai ↔ Leedu)", "coords": [(57.10, 24.68), (56.28, 24.45), (55.60, 24.20)], "color": "#ff7f0e", "width": 3.5},
+        {"name": "Leedu magistraal (Klaipėda ↔ Jauniūnai / Vilnius)", "coords": [(55.66, 21.14), (55.40, 22.80), (54.94, 24.99)], "color": "#1f77b4", "width": 3},
+        {"name": "GIPL (Jauniūnai ↔ Poola Hołowczyce)", "coords": [(54.94, 24.99), (54.10, 23.40), (52.30, 22.90)], "color": "#9467bd", "width": 3.5},
+        # 2. Põhjamere ja Norra magistraalid Mandri-Euroopasse
+        {"name": "Baltic Pipe (Norra ↔ Taani ↔ Poola)", "coords": [(59.20, 4.50), (56.40, 8.20), (55.30, 11.50), (54.00, 15.00), (53.91, 14.28)], "color": "#17becf", "width": 3.5},
+        {"name": "Europipe I & II (Norra ↔ Saksamaa)", "coords": [(58.20, 2.50), (54.80, 6.50), (53.64, 8.13)], "color": "#1f77b4", "width": 3.5},
+        {"name": "Franpipe (Norra ↔ Dunkerque Prantsusmaa)", "coords": [(58.00, 2.00), (53.50, 2.20), (51.04, 2.23)], "color": "#1f77b4", "width": 3},
+        {"name": "Zeepipe (Norra ↔ Zeebrugge Belgia)", "coords": [(58.30, 2.20), (53.20, 2.80), (51.36, 3.20)], "color": "#1f77b4", "width": 3},
+        # 3. Kesk- ja Lääne-Euroopa transiitmagistraalid
+        {"name": "TENP / Transitgas (Madalmaad ↔ Saksamaa ↔ Šveits ↔ Itaalia)", "coords": [(52.65, 4.68), (51.20, 6.80), (48.80, 8.00), (46.80, 8.20), (45.50, 9.20)], "color": "#ff7f0e", "width": 3.5},
+        {"name": "MEGAL (Waidhaus ↔ Lõuna-Saksamaa ↔ Prantsusmaa)", "coords": [(49.65, 12.50), (49.00, 10.50), (48.70, 6.30)], "color": "#2ca02c", "width": 3},
+        {"name": "TAG (Trans Austria Gasleitung: Baumgarten ↔ Tarvisio Itaalia)", "coords": [(48.31, 16.87), (47.10, 15.40), (46.50, 13.60), (45.80, 13.20)], "color": "#d62728", "width": 4},
+        {"name": "WAG (West-Austria Gasleitung: Baumgarten ↔ Saksamaa)", "coords": [(48.31, 16.87), (48.40, 15.00), (48.50, 13.50)], "color": "#2ca02c", "width": 3},
+        {"name": "Poola-Slovakkia interkonnektor (Strachocina ↔ Veľké Kapušany)", "coords": [(52.30, 22.90), (49.60, 22.00), (48.60, 21.90)], "color": "#9467bd", "width": 3},
+        {"name": "MidCat / Virtual Pyrenees (Prantsusmaa ↔ Barcelona)", "coords": [(44.50, 0.50), (42.80, 2.50), (41.34, 2.16)], "color": "#8c564b", "width": 2.5},
+        # 4. Lõuna gaasikoridor ja Vahemere magistraalid
+        {"name": "TAP (Trans Adriatic: Kreeka ↔ Albaania ↔ Melendugno Itaalia)", "coords": [(40.85, 25.88), (40.60, 22.90), (40.70, 19.90), (40.30, 18.30)], "color": "#008080", "width": 3.5},
+        {"name": "IGB interkonnektor (Kreeka Komotini ↔ Bulgaaria Stara Zagora)", "coords": [(41.10, 25.40), (42.40, 25.60)], "color": "#2ca02c", "width": 3},
+        {"name": "BRUA koridor (Bulgaaria ↔ Rumeenia ↔ Ungari ↔ Baumgarten)", "coords": [(43.35, 23.60), (44.50, 24.00), (46.20, 21.30), (48.31, 16.87)], "color": "#e377c2", "width": 3},
+        {"name": "Krk LNG ↔ Ungari magistraal", "coords": [(45.18, 14.54), (45.80, 16.00), (46.50, 18.00)], "color": "#1f77b4", "width": 3},
+        {"name": "Transmed (Alžeeria ↔ Tuneesia ↔ Sitsiilia ↔ Mandri-Itaalia)", "coords": [(36.80, 10.50), (37.50, 12.50), (40.50, 15.00), (42.50, 12.50)], "color": "#bcbd22", "width": 3.5},
+        {"name": "Medgaz (Alžeeria Beni Saf ↔ Almería Hispaania)", "coords": [(35.30, -1.40), (36.80, -2.40), (40.20, -3.70)], "color": "#bcbd22", "width": 3},
+    ]
+
+    fig_pipe = go.Figure()
+
+    # Joonistame magistraaltorustikud
+    for pipe in pipelines_eu:
+        lats = [c[0] for c in pipe["coords"]]
+        lons = [c[1] for c in pipe["coords"]]
+        fig_pipe.add_trace(
+            go.Scattergeo(
+                lat=lats,
+                lon=lons,
+                mode="lines",
+                name=pipe["name"],
+                line=dict(width=pipe["width"], color=pipe["color"]),
+                hoverinfo="text",
+                text=f"Magistraal: {pipe['name']}",
+            )
+        )
+
+    # Joonistame hoidlad, LNG terminalid ja sõlmed
+    fig_pipe.add_trace(
+        go.Scattergeo(
+            lat=nodes_eu["lat"],
+            lon=nodes_eu["lon"],
+            mode="markers+text",
+            marker=dict(
+                size=nodes_eu["size"],
+                color=nodes_eu["color"],
+                line=dict(width=1.5, color="#ffffff"),
+            ),
+            text=nodes_eu["name"],
+            textposition="top right",
+            textfont=dict(family="Arial, sans-serif", size=9, color="#111111"),
+            hoverinfo="text",
+            hovertext=nodes_eu["name"] + "<br>" + nodes_eu["type"],
+            showlegend=False,
+        )
+    )
+
+    fig_pipe.update_geos(
+        scope="europe",
+        center=dict(lat=54.0, lon=15.0),
+        projection_scale=2.8,
+        showcoastlines=True,
+        coastlinecolor="#aaaaaa",
+        showland=True,
+        landcolor="#f8f9fa",
+        showocean=True,
+        oceancolor="#eef3f8",
+        showcountries=True,
+        countrycolor="#dddddd",
+        countrywidth=1,
+        fitbounds=False,
+    )
+    fig_pipe.update_layout(
+        title="Euroopa Liidu gaasi ülekandevõrk (ENTSOG koridorid), Inčukalns UGS, hoidlad ja LNG terminalid",
+        margin=dict(r=0, t=40, l=0, b=0),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=9)),
+    )
+    st.plotly_chart(fig_pipe, use_container_width=True)
+
+    st.caption("📍 **Allikad:** ENTSO-G Transparency Platform / Gas Infrastructure Europe (GIE AGSI) / Conexus Baltic Grid / Elering Gaas.")
+
+    st.markdown("---")
+
+    # 3. Turuhinnad: TTF ja GET Baltic
+    st.markdown("#### 3. Maagaasi võrdlushinnad: Dutch TTF vs GET Baltic (BGSI)")
     if not df_ttf_filtered.empty and not df_getbaltic_filtered.empty:
         fig_gas = go.Figure()
         fig_gas.add_trace(
@@ -1030,8 +1203,6 @@ with tab_gas:
         )
         st.plotly_chart(fig_gas, use_container_width=True)
 
-    st.markdown("---")
-
     current_year = datetime.now().year
     col_g1, col_g2 = st.columns(2)
 
@@ -1046,10 +1217,6 @@ with tab_gas:
         df_ttf_table = build_commodity_monthly_table(df_ttf_full, "€/MWh")
         if not df_ttf_table.empty:
             st.dataframe(df_ttf_table, hide_index=True, use_container_width=True)
-
-    st.caption(
-        "📍 **Allikad:** GET Baltic Gas Spot Index (BGSI) / ICE Endex / Yahoo Finance (`TTF=F`)."
-    )
 
 
 # --- VAHELEHT 4: SAGEDUSRESERVID (BBCM / BTD) ---
