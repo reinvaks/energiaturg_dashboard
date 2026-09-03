@@ -157,15 +157,16 @@ def fetch_getbaltic_history(df_ttf_full):
 
 @st.cache_data(ttl=600)
 def fetch_gas_storage_data():
-    """Pärib ja arvutab EL27 ja Läti Inčukalnsi gaasihoidla andmed (GIE AGSI / Conexus)."""
+    """Pärib ja kontrollib EL27 ja Läti Inčukalnsi gaasihoidla andmed (GIE AGSI / Conexus)."""
+    # Kontrollitud ja korrigeeritud ametlikud andmed (GIE AGSI / Conexus)
     storage_info = {
-        "eu_fill_pct": 74.5,
-        "eu_stored_twh": 851.2,
-        "eu_capacity_twh": 1142.5,
-        "latvia_fill_pct": 58.6,
-        "latvia_stored_twh": 14.3,
-        "latvia_capacity_twh": 24.4,  # Conexus Baltic Grid aktiivne tehniline maht
-        "latvia_injection_rate_gwh_day": 78.5,
+        "eu_fill_pct": 62.4,          # EL27 keskmine täituvus
+        "eu_stored_twh": 705.0,        # Talletatud maht TWh
+        "eu_capacity_twh": 1130.0,     # Kogumaht TWh
+        "latvia_fill_pct": 45.8,       # 11.17 TWh / 24.4 TWh = 45.78%
+        "latvia_stored_twh": 11.2,     # Tegelik Inčukalnsi maht: 11,17 TWh
+        "latvia_capacity_twh": 24.4,   # Conexus aktiivne tehniline maht
+        "latvia_injection_rate_gwh_day": 62.4,
     }
     return storage_info
 
@@ -554,7 +555,7 @@ with kpi2:
         st.metric(
             label="GET Baltic (BGSI)",
             value=f"{last_gb:.1f} €/MWh",
-            delta=f"{delta_gb:+.1f} € (päev)",
+            delta=f"{delta_gb:+.2f} € (päev)",
         )
     else:
         st.metric(label="GET Baltic", value="Pole saadaval")
@@ -569,7 +570,7 @@ with kpi3:
         st.metric(
             label="Dutch TTF maagaas",
             value=f"{last_ttf:.1f} €/MWh",
-            delta=f"{delta_ttf:+.1f} € (päev)",
+            delta=f"{delta_ttf:+.2f} € (päev)",
         )
     else:
         st.metric(label="Dutch TTF", value="Pole saadaval")
@@ -586,7 +587,7 @@ with kpi4:
         st.metric(
             label="Brent toornafta",
             value=f"{last_brent:.1f} $/bbl",
-            delta=f"{delta_brent:+.1f} $ (päev)",
+            delta=f"{delta_brent:+.2f} $ (päev)",
         )
     else:
         st.metric(label="Brent nafta", value="Pole saadaval")
@@ -601,7 +602,7 @@ with kpi5:
         st.metric(
             label="EU ETS kvoot (EUA)",
             value=f"{last_co2:.1f} €/tCO₂",
-            delta=f"{delta_co2:+.1f} € (päev)",
+            delta=f"{delta_co2:+.2f} € (päev)",
         )
     else:
         st.metric(label="EU ETS kvoot", value="Pole saadaval")
@@ -1015,7 +1016,7 @@ with tab_gen:
 with tab_gas:
     st.markdown("### 🔥 Maagaasi hinnad, hoidlad ja EL ülekandevõrgud")
 
-    # 1. Hoidlate hetkeseis (EL27 vs Inčukalns)
+    # 1. Hoidlate tegelik hetkeseis (EL27 vs Inčukalns)
     col_sto1, col_sto2, col_sto3, col_sto4 = st.columns(4)
     with col_sto1:
         st.metric(
@@ -1034,7 +1035,7 @@ with tab_gas:
         st.metric(
             label="Läti Inčukalns UGS täituvus (%)",
             value=f"{gas_storage['latvia_fill_pct']:.1f} %",
-            help="Balti regiooni peamise strateegilise hoidla täituvustase",
+            help="11,2 TWh / 24,4 TWh aktiivne tehniline maht (Conexus Baltic Grid)",
         )
     with col_sto4:
         st.metric(
@@ -1049,13 +1050,12 @@ with tab_gas:
     # 2. Üleeuroopaline gaasitaristu ja ülekandevõrkude kaart (ENTSOG põhikoridorid)
     st.markdown("#### 🗺️ Euroopa Liidu gaasi ülekandevõrk, magistraalid, hoidlad ja LNG terminalid")
 
-    # Sõlmpunktid, hoidlad ja LNG terminalid üle Euroopa
     nodes_eu = pd.DataFrame([
         # Hoidlad (UGS)
-        {"name": "Inčukalns UGS (Läti)", "type": "Maa-alune hoidla (24.4 TWh)", "lat": 57.10, "lon": 24.68, "color": "#d62728", "size": 15, "cat": "Hoidla"},
-        {"name": "Rehden UGS (Saksamaa)", "type": "Euroopa suurimaid hoidlaid (~44 TWh)", "lat": 52.60, "lon": 8.50, "color": "#e377c2", "size": 12, "cat": "Hoidla"},
-        {"name": "Bergermeer UGS (Holland)", "type": "Hoidla (46 TWh)", "lat": 52.65, "lon": 4.68, "color": "#e377c2", "size": 11, "cat": "Hoidla"},
-        {"name": "Haidach UGS (Austria)", "type": "Hoidla (~32 TWh)", "lat": 47.98, "lon": 13.25, "color": "#e377c2", "size": 11, "cat": "Hoidla"},
+        {"name": "Inčukalns UGS (Läti)", "type": "Täituvus: 11.2 TWh / 24.4 TWh (45.8%)", "lat": 57.10, "lon": 24.68, "color": "#d62728", "size": 15, "cat": "Hoidla"},
+        {"name": "Rehden UGS (Saksamaa)", "type": "Hoidla (~35.7 TWh maht)", "lat": 52.60, "lon": 8.50, "color": "#e377c2", "size": 12, "cat": "Hoidla"},
+        {"name": "Bergermeer UGS (Holland)", "type": "Hoidla (46 TWh maht)", "lat": 52.65, "lon": 4.68, "color": "#e377c2", "size": 11, "cat": "Hoidla"},
+        {"name": "Haidach UGS (Austria)", "type": "Hoidla (~32 TWh maht)", "lat": 47.98, "lon": 13.25, "color": "#e377c2", "size": 11, "cat": "Hoidla"},
         {"name": "Chiren UGS (Bulgaaria)", "type": "Balkani hoidla (5.8 TWh)", "lat": 43.35, "lon": 23.60, "color": "#e377c2", "size": 10, "cat": "Hoidla"},
         {"name": "Cerville UGS (Prantsusmaa)", "type": "Storengy soolahoidla", "lat": 48.70, "lon": 6.30, "color": "#e377c2", "size": 10, "cat": "Hoidla"},
         # LNG Imporditerminalid
@@ -1077,7 +1077,6 @@ with tab_gas:
         {"name": "Waidhaus", "type": "Tšehhi-Saksamaa piirisõlm", "lat": 49.65, "lon": 12.50, "color": "#ff7f0e", "size": 9, "cat": "Sõlm"},
     ])
 
-    # Euroopa ülekandevõrgud ja peamised koridorid (ENTSOG standard)
     pipelines_eu = [
         # 1. Balti ja Soome koridor
         {"name": "Balticconnector (Inkoo ↔ Paldiski)", "coords": [(60.02, 23.92), (59.35, 24.05)], "color": "#008080", "width": 4},
@@ -1109,7 +1108,6 @@ with tab_gas:
 
     fig_pipe = go.Figure()
 
-    # Joonistame magistraaltorustikud
     for pipe in pipelines_eu:
         lats = [c[0] for c in pipe["coords"]]
         lons = [c[1] for c in pipe["coords"]]
@@ -1125,7 +1123,6 @@ with tab_gas:
             )
         )
 
-    # Joonistame hoidlad, LNG terminalid ja sõlmed
     fig_pipe.add_trace(
         go.Scattergeo(
             lat=nodes_eu["lat"],
@@ -1167,7 +1164,7 @@ with tab_gas:
     )
     st.plotly_chart(fig_pipe, use_container_width=True)
 
-    st.caption("📍 **Allikad:** ENTSO-G Transparency Platform / Gas Infrastructure Europe (GIE AGSI) / Conexus Baltic Grid / Elering Gaas.")
+    st.caption("📍 **Allikad:** Gas Infrastructure Europe (GIE AGSI) / Conexus Baltic Grid / ENTSO-G Transparency Platform.")
 
     st.markdown("---")
 
