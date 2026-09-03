@@ -522,7 +522,6 @@ if not df_short_ee.empty:
 st.subheader("Hetketuru hinnatasemed ja jooksvad näitajad")
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
-# KPI 1: Elektri TÄNASE PÄEVA KESKMINE
 with kpi1:
     if today_ee_mean is not None:
         delta_str = None
@@ -554,7 +553,7 @@ with kpi2:
         st.metric(
             label="GET Baltic (BGSI)",
             value=f"{last_gb:.1f} €/MWh",
-            delta=f"{delta_gb:+.1f} € (päev)",
+            delta=f"{delta_gb:+.2f} € (päev)",
         )
     else:
         st.metric(label="GET Baltic", value="Pole saadaval")
@@ -569,7 +568,7 @@ with kpi3:
         st.metric(
             label="Dutch TTF maagaas",
             value=f"{last_ttf:.1f} €/MWh",
-            delta=f"{delta_ttf:+.1f} € (päev)",
+            delta=f"{delta_ttf:+.2f} € (päev)",
         )
     else:
         st.metric(label="Dutch TTF", value="Pole saadaval")
@@ -586,7 +585,7 @@ with kpi4:
         st.metric(
             label="Brent toornafta",
             value=f"{last_brent:.1f} $/bbl",
-            delta=f"{delta_brent:+.1f} $ (päev)",
+            delta=f"{delta_brent:+.2f} $ (päev)",
         )
     else:
         st.metric(label="Brent nafta", value="Pole saadaval")
@@ -601,7 +600,7 @@ with kpi5:
         st.metric(
             label="EU ETS kvoot (EUA)",
             value=f"{last_co2:.1f} €/tCO₂",
-            delta=f"{delta_co2:+.1f} € (päev)",
+            delta=f"{delta_co2:+.2f} € (päev)",
         )
     else:
         st.metric(label="EU ETS kvoot", value="Pole saadaval")
@@ -1417,8 +1416,8 @@ with tab_custom:
                     "Turg / Segment": "🛢️ Toornafta (Brent)",
                     "Mõõtühik": "$/bbl",
                     "Aritmeetiline keskmine": f"{brent_mean:.1f}",
-                    "Madalaim päeva keskmine": f"{brent_min_row['Close']:.1f} ({brent_min_row['date'].strftime('%d.%m.%Y')})",
-                    "Kõrgeim päeva keskmine": f"{brent_max_row['Close']:.1f} ({brent_max_row['date'].strftime('%d.%m.%Y')})",
+                    "Madalaim päeva keskmine": f"{brent_min_row['Close']:.1f} ({brent_min_row['Date'].strftime('%d.%m.%Y')})",
+                    "Kõrgeim päeva keskmine": f"{brent_max_row['Close']:.1f} ({brent_max_row['Date'].strftime('%d.%m.%Y')})",
                 })
 
         # 5. EU ETS EUA
