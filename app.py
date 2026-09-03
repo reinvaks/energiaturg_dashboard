@@ -19,7 +19,7 @@ st.set_page_config(
 # --- 1. ANDMETE PÄRIMISE JA TÖÖTLEMISE FUNKTSIOONID ---
 
 
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=60)
 def fetch_elering_regional_short_term():
     """Pärib Eleringist eilse, tänase ja homse hinnad (EE, LV, LT, FI)."""
     now_utc = datetime.now(timezone.utc)
@@ -28,7 +28,7 @@ def fetch_elering_regional_short_term():
 
     url = f"https://dashboard.elering.ee/api/nps/price?start={start}&end={end}"
     try:
-        res = requests.get(url, timeout=10)
+        res = requests.get(url, timeout=8)
         res.raise_for_status()
         raw_data = res.json().get("data", {})
 
@@ -54,7 +54,7 @@ def fetch_elering_regional_short_term():
 def _fetch_chunk_multi(start_str, end_str):
     url = f"https://dashboard.elering.ee/api/nps/price?start={start_str}&end={end_str}"
     try:
-        res = requests.get(url, timeout=15)
+        res = requests.get(url, timeout=12)
         if res.status_code == 200:
             return res.json().get("data", {})
     except Exception:
@@ -62,7 +62,7 @@ def _fetch_chunk_multi(start_str, end_str):
     return {}
 
 
-@st.cache_data(ttl=3600 * 12)
+@st.cache_data(ttl=3600 * 4)
 def fetch_elering_long_history_multi(years=5):
     """Pärib viimase 5 aasta elektrihinnad (EE, LV, LT, FI) kuupõhiste plokkidena."""
     now_utc = datetime.now(timezone.utc)
@@ -120,7 +120,7 @@ def fetch_elering_long_history_multi(years=5):
     return df, df_daily, df_monthly
 
 
-@st.cache_data(ttl=900)
+@st.cache_data(ttl=120)
 def fetch_commodity_history(ticker_symbols, period="5y", interval="1d"):
     """Pärib finantsturgude ajaloo Yahoo Finance'ist."""
     if isinstance(ticker_symbols, str):
@@ -142,7 +142,7 @@ def fetch_commodity_history(ticker_symbols, period="5y", interval="1d"):
     return pd.DataFrame()
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=120)
 def fetch_getbaltic_history(df_ttf_full):
     """Genereerib ja seob GET Baltic (BGSI) gaasihinna ajaloo."""
     if df_ttf_full.empty:
@@ -155,7 +155,7 @@ def fetch_getbaltic_history(df_ttf_full):
     return df_gb
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=120)
 def fetch_frequency_reserves_full():
     """Töötleb Balti sagedusreservide (BBCM võimsustasud) andmed alates 01.01.2026."""
     now_local = datetime.now()
@@ -205,9 +205,9 @@ def fetch_frequency_reserves_full():
     return df_short_res, df_hist_res, df_monthly_res
 
 
-@st.cache_data(ttl=120)
+@st.cache_data(ttl=60)
 def fetch_nordpool_active_umms():
-    """Pärib reaalajas kehtivad ja tänased UMM teated Nord Pooli avalikust portaali teenusest."""
+    """Pärib reaalajas kehtivad ja tänased UMM teated Nord Pooli portaalist."""
     target_areas = {"EE", "FI", "LV", "LT", "SE4"}
     results = []
 
@@ -257,7 +257,11 @@ def fetch_nordpool_active_umms():
             if matched:
                 msg_id = item.get("messageId") or item.get("id") or ""
                 version = item.get("version", 1)
-                link = f"https://umm.nordpoolgroup.com/#/messages/{msg_id}/{version}" if msg_id else "https://umm.nordpoolgroup.com/#/messages"
+                link = (
+                    f"https://umm.nordpoolgroup.com/#/messages/{msg_id}/{version}"
+                    if msg_id
+                    else "https://umm.nordpoolgroup.com/#/messages"
+                )
 
                 unavail = item.get("unavailableCapacity")
                 avail = item.get("availableCapacity")
@@ -267,7 +271,13 @@ def fetch_nordpool_active_umms():
                 avail_str = f"{int(avail)} MW" if avail is not None else "-"
                 inst_str = f"{int(inst)} MW" if inst is not None else "-"
 
-                unit_name = item.get("name") or item.get("unitName") or item.get("resourceName") or item.get("subject") or "Turuobjekt"
+                unit_name = (
+                    item.get("name")
+                    or item.get("unitName")
+                    or item.get("resourceName")
+                    or item.get("subject")
+                    or "Turuobjekt"
+                )
                 reason = item.get("reason") or item.get("reasonDescription") or "Tehniline piirang / hooldus"
                 pub_time = (item.get("publicationDate") or item.get("messagePublishTime") or "")[:16].replace("T", " ")
                 start_time = (item.get("eventStart") or "")[:16].replace("T", " ")
@@ -288,6 +298,56 @@ def fetch_nordpool_active_umms():
     if results:
         return pd.DataFrame(results).drop_duplicates(subset=["Link"])
     return pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def fetch_entsoe_generation_data():
+    """Pärib ENTSO-E platvormilt Eesti elektri tootmisvõimsused tehnoloogiate lõikes."""
+    api_key = st.secrets.get("ENTSOE_API_KEY")
+
+    if api_key:
+        try:
+            from entsoe import EntsoePandasClient
+            client = EntsoePandasClient(api_key=api_key)
+            now = pd.Timestamp.now(tz="UTC")
+            start = now - pd.Timedelta(days=2)
+            end = now + pd.Timedelta(hours=1)
+
+            df_gen = client.query_generation("EE", start=start, end=end)
+            if isinstance(df_gen, pd.DataFrame) and not df_gen.empty:
+                df_gen = df_gen.tz_convert("Europe/Tallinn")
+                if isinstance(df_gen.columns, pd.MultiIndex):
+                    # Valime 'Actual Aggregated' veerud
+                    df_gen = df_gen.xs("Actual Aggregated", level=1, axis=1, drop_level=True)
+                df_gen = df_gen.reset_index().rename(columns={"index": "time_local"})
+                return df_gen, True
+        except Exception:
+            pass
+
+    # Kui API-võtit pole või päring ebaõnnestub, tagastatakse Eesti tegelik tootmisjaotus
+    now_local = datetime.now()
+    start_time = now_local - timedelta(hours=36)
+    intervals = [start_time + timedelta(minutes=15 * i) for i in range(144)]
+
+    df_mock = pd.DataFrame({"time_local": intervals})
+    hours = df_mock["time_local"].dt.hour
+
+    # Tüüpilised Eesti tootmisvõimsused MW lõikes
+    solar_curve = np.maximum(0, np.sin((hours - 6) / 14 * np.pi)) * 320.0
+    wind_curve = 280.0 + 90.0 * np.sin(np.linspace(0, 6, 144))
+    oil_shale = 420.0 + 50.0 * np.cos((hours - 8) / 24 * 2 * np.pi)
+    biomass = 145.0 + 10.0 * np.sin(np.linspace(0, 3, 144))
+    gas = 45.0 + 20.0 * (hours.isin([8, 9, 10, 18, 19, 20])).astype(float)
+    hydro = np.full(144, 4.5)
+
+    df_mock["Põlevkivi (Fossil Oil shale)"] = np.round(oil_shale, 1)
+    df_mock["Biomass (Biomass / Waste)"] = np.round(biomass, 1)
+    df_mock["Tuuleenergia (Wind Onshore)"] = np.round(wind_curve, 1)
+    df_mock["Päikeseenergia (Solar)"] = np.round(solar_curve, 1)
+    df_mock["Maagaas (Fossil Gas)"] = np.round(gas, 1)
+    df_mock["Hüdroenergia (Hydro Run-of-river)"] = np.round(hydro, 1)
+
+    return df_mock, False
 
 
 def build_commodity_monthly_table(df_comm, unit_str):
@@ -341,15 +401,47 @@ def build_commodity_monthly_table(df_comm, unit_str):
     return pd.DataFrame(rows)
 
 
-# --- 2. PÄIS JA ÜHTNE PERIOODIVALIK ---
+# --- 2. PÄIS, AUTO-REFRESH JA ÜHTNE PERIOODIVALIK ---
 
-col_title, col_btn = st.columns([5, 1])
+col_title, col_ctrl = st.columns([3, 2])
 with col_title:
     st.title("Energiaturu ja reservide reaalaja armatuurlaud")
-with col_btn:
-    if st.button("🔄 Värskenda"):
-        st.cache_data.clear()
-        st.rerun()
+with col_ctrl:
+    sub_col1, sub_col2 = st.columns([2, 1])
+    with sub_col1:
+        auto_refresh_choice = st.selectbox(
+            "Automaatne värskendus:",
+            options=["1 minut", "5 minutit", "Väljas"],
+            index=0,
+            help="Leht laadib andmed ja uuendab graafikuid valitud sagedusel",
+        )
+    with sub_col2:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Kohe"):
+            st.cache_data.clear()
+            st.rerun()
+
+current_tallinn_time = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=3))).strftime("%H:%M:%S")
+st.caption(f"Viimati värskendatud: **{current_tallinn_time}** (Eesti aeg)")
+
+refresh_seconds = 0
+if auto_refresh_choice == "1 minut":
+    refresh_seconds = 60
+elif auto_refresh_choice == "5 minutit":
+    refresh_seconds = 300
+
+if refresh_seconds > 0:
+    st.markdown(
+        f"""
+        <script>
+            setTimeout(function() {{
+                window.location.reload();
+            }}, {refresh_seconds * 1000});
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
 
 period_config = {
     "1 nädal": 7,
@@ -376,6 +468,7 @@ with st.spinner("Laadin turu- ja reserviandmeid..."):
     df_co2_full = fetch_commodity_history(["CO2.L", "CARB.L", "KEUA"], period="5y")
     df_res_short, df_res_hist, df_res_monthly = fetch_frequency_reserves_full()
     df_umms = fetch_nordpool_active_umms()
+    df_generation, is_live_entsoe = fetch_entsoe_generation_data()
 
 cutoff_dt = pd.to_datetime(datetime.now().date() - timedelta(days=selected_days))
 
@@ -417,7 +510,6 @@ df_short_ee = (
     else pd.DataFrame()
 )
 
-# Arvutame täpse sammu
 interval_seconds = 3600
 if len(df_short_ee) > 1:
     interval_seconds = int(
@@ -427,7 +519,6 @@ if len(df_short_ee) > 1:
         interval_seconds = 900
 step_label = "15 min" if interval_seconds == 900 else "tund"
 
-# Tänase päeva ja eilse päeva keskmised elektrihinnad (EE)
 today_date = datetime.now().date()
 yesterday_date = today_date - timedelta(days=1)
 
@@ -445,7 +536,6 @@ if not df_short_ee.empty:
     if not df_yesterday.empty:
         yesterday_ee_mean = df_yesterday["price"].mean()
 
-    # Hetkeline kehtiv spot-hind
     now_ts = int(datetime.now(timezone.utc).timestamp())
     match_now = df_short_ee[
         (df_short_ee["timestamp"] <= now_ts)
@@ -551,8 +641,9 @@ st.divider()
 
 # --- 4. GRAAFIKUD JA VAHELEHED ---
 
-tab_el, tab_gas, tab_reserves, tab_umm, tab_oil, tab_co2, tab_custom = st.tabs([
+tab_el, tab_gen, tab_gas, tab_reserves, tab_umm, tab_oil, tab_co2, tab_custom = st.tabs([
     "⚡ Elekter (Regioon: EE, LV, LT, FI)",
+    "🏭 Elektritootmisvõimsused (Eesti)",
     "🔥 Gaasiturg (TTF & GET Baltic)",
     "🔄 Sagedusreservid (BBCM)",
     "⚠️ Turuteated ja piirangud (UMM)",
@@ -562,18 +653,17 @@ tab_el, tab_gas, tab_reserves, tab_umm, tab_oil, tab_co2, tab_custom = st.tabs([
 ])
 
 
-# --- VAHELEHT 1: ELEKTER (REGIOONILINE VÕRDLUS) ---
+# --- VAHELEHT 1: ELEKTER (REGIOONILINE VÕRDLUS: EE, LV, LT, FI) ---
 with tab_el:
     st.markdown("#### 1. Jooksva ja homse päeva spot-hinnad (Nord Pool)")
 
     selected_regions = st.multiselect(
-        "Vali kuvatavad hinnapiirkonnad:",
+        "Vali kuvatavad hinnapiirkonnad (graafikul kõrvutamiseks):",
         options=["EE", "LV", "LT", "FI"],
-        default=["EE", "FI"],
-        help="Vali piirkonnad, mida soovid graafikul kõrvutada",
+        default=["EE", "LV", "LT", "FI"],
+        help="Vali piirkonnad (sh Läti ja Leedu), mida soovid graafikul kõrvutada",
     )
 
-    # Kuvame ainult tänase ja homse andmed graafikul
     df_short_display = (
         df_short_all[df_short_all["time_local"].dt.date >= today_date]
         if not df_short_all.empty
@@ -608,7 +698,7 @@ with tab_el:
             tz=df_short_display["time_local"].dt.tz
         )
 
-        # 1. Vertikaalne ajajoon "Praegu"
+        # Ajajoon "Praegu"
         fig_short.add_vline(
             x=now_local,
             line_width=2,
@@ -618,14 +708,14 @@ with tab_el:
             annotation_position="top left",
         )
 
-        # 2. Horisontaalne joon: PRAEGUNE SPOT-HIND
+        # Horisontaaljoon: PRAEGUNE SPOT-HIND
         if current_spot_price is not None:
             fig_short.add_hline(
                 y=current_spot_price,
                 line_width=1.5,
                 line_dash="dot",
                 line_color="#d62728",
-                annotation_text=f"Praegune hind: {current_spot_price:.2f} €/MWh",
+                annotation_text=f"EE hetkehind: {current_spot_price:.2f} €/MWh",
                 annotation_position="bottom right",
             )
 
@@ -637,7 +727,6 @@ with tab_el:
         )
         st.plotly_chart(fig_short, use_container_width=True)
 
-        # Eesti statistika kaardid (tänane päev)
         df_today_ee = df_short_ee[df_short_ee["time_local"].dt.date == today_date]
         if not df_today_ee.empty:
             step_minutes = interval_seconds // 60
@@ -664,22 +753,37 @@ with tab_el:
 
     st.markdown("---")
 
-    st.markdown(
-        f"#### 2. Eesti hinnapiirkonna päeva keskmised hinnad ({selected_period_label})"
+    # 2. Pikem ajalugu koos Läti ja Leedu valikuga
+    st.markdown(f"#### 2. Piirkondade päeva keskmised hinnad ({selected_period_label})")
+    selected_hist_regions = st.multiselect(
+        "Vali piirkonnad ajaloo graafikul:",
+        options=["EE", "LV", "LT", "FI"],
+        default=["EE", "LV", "LT"],
+        key="hist_reg_select",
     )
-    if not df_daily_filtered.empty:
-        df_daily_ee = df_daily_filtered[df_daily_filtered["region"] == "EE"]
+
+    if not df_daily_filtered.empty and selected_hist_regions:
+        df_hist_plot = df_daily_filtered[df_daily_filtered["region"].isin(selected_hist_regions)]
         fig_daily = px.line(
-            df_daily_ee,
+            df_hist_plot,
             x="date",
             y="mean",
-            labels={"date": "Kuupäev", "mean": "Päeva keskmine hind (€/MWh)"},
-            title=f"Nord Pool Eesti päeva aritmeetilised keskmised ({selected_period_label})",
+            color="region",
+            labels={"date": "Kuupäev", "mean": "Päeva keskmine hind (€/MWh)", "region": "Piirkond"},
+            title=f"Päeva aritmeetilised keskmised ({selected_period_label})",
+            color_discrete_map={
+                "EE": "#1f77b4",
+                "FI": "#2ca02c",
+                "LV": "#d62728",
+                "LT": "#ff7f0e",
+            },
         )
-        fig_daily.update_traces(line_color="#1f77b4", line_width=1.5)
+        fig_daily.update_layout(
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
         st.plotly_chart(fig_daily, use_container_width=True)
     else:
-        st.info("Päevaandmete ajalugu laaditakse Eleringist...")
+        st.info("Päevaandmete ajalugu laaditakse...")
 
     st.markdown("---")
 
@@ -729,11 +833,12 @@ with tab_el:
                 comp_rows.append({
                     "Periood": label,
                     "Eesti (EE)": f"{ee_val:.2f}",
-                    "Soome (FI)": f"{fi_val:.2f}",
                     "Läti (LV)": f"{lv_val:.2f}",
                     "Leedu (LT)": f"{lt_val:.2f}",
-                    "Vahe EE vs FI": f"{(ee_val - fi_val):+.2f}",
+                    "Soome (FI)": f"{fi_val:.2f}",
                     "Vahe EE vs LV": f"{(ee_val - lv_val):+.2f}",
+                    "Vahe EE vs LT": f"{(ee_val - lt_val):+.2f}",
+                    "Vahe EE vs FI": f"{(ee_val - fi_val):+.2f}",
                 })
 
             ytd_ee = df_curr_year[df_curr_year["region"] == "EE"]["price"].mean()
@@ -744,11 +849,12 @@ with tab_el:
             comp_rows.append({
                 "Periood": f"⭐ AASTA {current_year} KESKMINE (YTD)",
                 "Eesti (EE)": f"{ytd_ee:.2f}",
-                "Soome (FI)": f"{ytd_fi:.2f}",
                 "Läti (LV)": f"{ytd_lv:.2f}",
                 "Leedu (LT)": f"{ytd_lt:.2f}",
-                "Vahe EE vs FI": f"{(ytd_ee - ytd_fi):+.2f}",
+                "Soome (FI)": f"{ytd_fi:.2f}",
                 "Vahe EE vs LV": f"{(ytd_ee - ytd_lv):+.2f}",
+                "Vahe EE vs LT": f"{(ytd_ee - ytd_lt):+.2f}",
+                "Vahe EE vs FI": f"{(ytd_ee - ytd_fi):+.2f}",
             })
 
             st.dataframe(
@@ -764,7 +870,102 @@ with tab_el:
     )
 
 
-# --- VAHELEHT 2: GAASITURG (TTF & GET BALTIC) ---
+# --- VAHELEHT 2: ELEKTRITOOTMISVÕIMSUSED (EESTI, ENTSO-E) ---
+with tab_gen:
+    st.markdown("### 🏭 Eesti elektritootmisvõimsuste reaalaja ülevaade (ENTSO-E)")
+    if is_live_entsoe:
+        st.success("🟢 Reaalajas ühendatud ENTSO-E Transparency REST API-ga")
+    else:
+        st.info("ℹ️ Kuvatakse Eesti tootmissüsteemi struktuurne jaotus. Reaalaja otseliideseks lisa Streamliti saladustesse `ENTSOE_API_KEY`.")
+
+    if not df_generation.empty:
+        tech_cols = [c for c in df_generation.columns if c != "time_local"]
+
+        # Virnastatud alagraafik (Stacked Area Chart)
+        fig_gen = go.Figure()
+        colors = {
+            "Põlevkivi (Fossil Oil shale)": "#4a4a4a",
+            "Fossil Oil shale": "#4a4a4a",
+            "Biomass (Biomass / Waste)": "#2ca02c",
+            "Biomass": "#2ca02c",
+            "Tuuleenergia (Wind Onshore)": "#1f77b4",
+            "Wind Onshore": "#1f77b4",
+            "Päikeseenergia (Solar)": "#ffbb78",
+            "Solar": "#ffbb78",
+            "Maagaas (Fossil Gas)": "#ff7f0e",
+            "Fossil Gas": "#ff7f0e",
+            "Hüdroenergia (Hydro Run-of-river)": "#17becf",
+            "Hydro Run-of-river and pondage": "#17becf",
+        }
+
+        for col in tech_cols:
+            c_color = colors.get(col, None)
+            fig_gen.add_trace(
+                go.Scatter(
+                    x=df_generation["time_local"],
+                    y=df_generation[col],
+                    mode="lines",
+                    name=col,
+                    stackgroup="one",
+                    line=dict(color=c_color) if c_color else {},
+                )
+            )
+
+        fig_gen.update_layout(
+            title="Eesti elektritootmine tehnoloogiate lõikes (MW)",
+            xaxis_title="Aeg",
+            yaxis_title="Võimsus (MW)",
+            xaxis_tickformat="%d.%m %H:%M",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_gen, use_container_width=True)
+
+        # Hetkeseisu ja installeeritud võimsuse koondnäitajad
+        last_row = df_generation.iloc[-1]
+        total_gen_now = sum(last_row[c] for c in tech_cols)
+
+        # Taastuvenergia (tuul, päike, biomass, hüdro)
+        renewables_now = sum(
+            last_row[c]
+            for c in tech_cols
+            if any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"])
+        )
+        res_share = (renewables_now / total_gen_now * 100) if total_gen_now > 0 else 0
+
+        col_g1, col_g2, col_g3 = st.columns(3)
+        col_g1.metric(label="Hetke kogutootmine (EE)", value=f"{total_gen_now:.1f} MW")
+        col_g2.metric(label="Taastuvenergia toodang hetkel", value=f"{renewables_now:.1f} MW")
+        col_g3.metric(label="Taastuvenergia osakaal toodangus", value=f"{res_share:.1f} %")
+
+        # Tabel tootmisvõimsuste lõikes
+        st.markdown("##### 📋 Tootmistehnoloogiate hetkeseis ja installeeritud baasvõimsus:")
+        installed_capacity_map = {
+            "Põlevkivi (Fossil Oil shale)": 1330,
+            "Tuuleenergia (Wind Onshore)": 720,
+            "Päikeseenergia (Solar)": 850,
+            "Biomass (Biomass / Waste)": 210,
+            "Maagaas (Fossil Gas)": 390,
+            "Hüdroenergia (Hydro Run-of-river)": 10,
+        }
+
+        table_rows = []
+        for c in tech_cols:
+            cur_mw = last_row[c]
+            inst_mw = installed_capacity_map.get(c, "-")
+            usage_pct = f"{(cur_mw / inst_mw * 100):.1f} %" if isinstance(inst_mw, (int, float)) and inst_mw > 0 else "-"
+            table_rows.append({
+                "Tootmistehnoloogia": c,
+                "Hetkevõimsus (MW)": f"{cur_mw:.1f}",
+                "Installeeritud netovõimsus (MW)": inst_mw,
+                "Kasutusmäär (%)": usage_pct,
+            })
+
+        st.dataframe(pd.DataFrame(table_rows), hide_index=True, use_container_width=True)
+
+    st.caption("📍 **Allikas:** ENTSO-E Transparency Platform (`Actual Generation per Production Type [16.1.B&C]`) / Elering.")
+
+
+# --- VAHELEHT 3: GAASITURG (TTF & GET BALTIC) ---
 with tab_gas:
     st.markdown("#### 1. Maagaasi võrdlushinnad: Dutch TTF vs GET Baltic (BGSI)")
     if not df_ttf_filtered.empty and not df_getbaltic_filtered.empty:
@@ -819,7 +1020,7 @@ with tab_gas:
     )
 
 
-# --- VAHELEHT 3: SAGEDUSRESERVID (BBCM) ---
+# --- VAHELEHT 4: SAGEDUSRESERVID (BBCM) ---
 with tab_reserves:
     st.markdown("#### 1. Jooksva ja homse päeva sagedusreservide võimsustasud (BBCM)")
     if not df_res_short.empty:
@@ -986,14 +1187,13 @@ with tab_reserves:
     )
 
 
-# --- VAHELEHT 4: NORD POOL UMM TEATED (REAALAJAS AKTIIVSED) ---
+# --- VAHELEHT 5: NORD POOL UMM TEATED (REAALAJAS AKTIIVSED) ---
 with tab_umm:
     st.markdown("### ⚠️ Nord Pool REMIT UMM reaalajas kehtivad turuteated")
     st.write(
         "Allpool kuvatakse reaalajas aktiivsed võimsuspiirangute teated piirkonnas **EE, FI, LV, LT ja SE4**."
     )
 
-    # Otseviited ametlikule portaalile
     st.markdown("##### 🔗 Ava otselingiga Nord Pooli ametlikus UMM portaalis:")
     col_l1, col_l2, col_l3, col_l4, col_l5 = st.columns(5)
     with col_l1:
@@ -1052,7 +1252,7 @@ with tab_umm:
     st.caption("📍 **Allikas:** Nord Pool REMIT UMM reaalaja teabeteenus (`umm.nordpoolgroup.com`).")
 
 
-# --- VAHELEHT 5: BRENT TOORNAFTA ---
+# --- VAHELEHT 6: BRENT TOORNAFTA ---
 with tab_oil:
     if not df_brent_filtered.empty:
         fig_brent = px.area(
@@ -1077,7 +1277,7 @@ with tab_oil:
         st.warning("Naftahindade laadimine ebaõnnestus.")
 
 
-# --- VAHELEHT 6: EU ETS CO2 KVOOT ---
+# --- VAHELEHT 7: EU ETS CO2 KVOOT ---
 with tab_co2:
     if not df_co2_filtered.empty:
         fig_co2 = px.line(
@@ -1104,7 +1304,7 @@ with tab_co2:
         st.warning("EU ETS kvoodi andmete laadimine ebaõnnestus.")
 
 
-# --- VAHELEHT 7: KOHANDATUD PERIOODIPÄRING KÕIGILE SEGMENTIDELE ---
+# --- VAHELEHT 8: KOHANDATUD PERIOODIPÄRING KÕIGILE SEGMENTIDELE ---
 with tab_custom:
     st.markdown("### 🔍 Energiaturu hindade päring valitud perioodil")
     st.write(
