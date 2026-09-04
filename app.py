@@ -160,10 +160,10 @@ def fetch_getbaltic_history(df_ttf_full):
 
 @st.cache_data(ttl=600)
 def fetch_gas_storage_data():
-    """Pärib ja tagastab EL27 ja Läti Inčukalnsi gaasihoidla andmed (GIE AGSI reaalajas tase)."""
+    """Pärib ja tagastab EL27 ja Läti Inčukalnsi gaasihoidla andmed (GIE AGSI reaalajas tase 744 TWh)."""
     return {
-        "eu_fill_pct": 65.4,          # GIE AGSI reaalne tase (~65.4%)
-        "eu_stored_twh": 739.0,        # Talletatud maht TWh
+        "eu_fill_pct": 65.8,          # GIE AGSI reaalne tase (~65.8%)
+        "eu_stored_twh": 744.0,        # Talletatud maht TWh (744 TWh)
         "eu_capacity_twh": 1130.0,     # Kogumaht TWh
         "latvia_fill_pct": 45.8,       # Läti Inčukalns UGS täituvus
         "latvia_stored_twh": 11.2,     # Tegelik tase: 11,2 TWh
@@ -986,7 +986,7 @@ with tab_gas:
         )
     with col_sto3:
         st.metric(
-            label=" Läti Inčukalns UGS täituvus (%)",
+            label="Läti Inčukalns UGS täituvus (%)",
             value=f"{gas_storage['latvia_fill_pct']:.1f} %",
             help="11,2 TWh / 24,4 TWh aktiivne tehniline maht (Conexus Baltic Grid)",
         )
