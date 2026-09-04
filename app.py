@@ -109,7 +109,7 @@ def fetch_elering_long_history_multi(years=5):
 
     df["year"] = df["time_local"].dt.year
     df["month"] = df["time_local"].dt.month
-    df["month_label"] = df["time_local"].dt.strftime("%Y-m")
+    df["month_label"] = df["time_local"].dt.strftime("%Y-%m")
 
     df_monthly = (
         df.groupby(["year", "month", "month_label", "region"])["price"]
@@ -137,7 +137,6 @@ def fetch_commodity_history(ticker_symbols, period="5y", interval="1d"):
                 if df["Date"].dt.tz is not None:
                     df["Date"] = df["Date"].dt.tz_localize(None)
                 
-                # Turu sulgemise / nädalavahetuse kaitse: täidame puuduvad väärtused viimase teadaolevaga
                 df["Close"] = df["Close"].ffill()
                 return df
         except Exception:
@@ -520,7 +519,7 @@ if not df_short_ee.empty:
         current_spot_price = df_short_ee.iloc[-1]["price"]
 
 
-# --- 3. HETKETURU MÕÕDIKUTE KAARDID (KPI - PROTSENDILISE MUUTUSEGA) ---
+# --- 3. HETKETURU MÕÕDIKUTE KAARDID (KPI) ---
 
 st.subheader("Hetketuru hinnatasemed ja jooksvad näitajad")
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
@@ -653,7 +652,6 @@ with tab_ee_core:
         title="Elektri lõpphinnad Läänemere piirkonnas (Eesti positsiooni võrdlus)",
         color_discrete_map={"Kodutarbijad": "#1f77b4", "Äritarbijad": "#ff7f0e"}
     )
-    # Tõstame Eesti esile eraldi annotatsiooniga või joonega
     fig_prices.update_layout(xaxis_title="Riik", yaxis_title="Hind (€/kWh)")
     st.plotly_chart(fig_prices, use_container_width=True)
     st.markdown("📍 **Allikas:** [Eurostat Energy Price Statistics](https://ec.europa.eu/eurostat/databrowser/view/ten00117/default/table?lang=en)")
