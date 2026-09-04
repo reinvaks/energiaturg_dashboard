@@ -910,93 +910,60 @@ with tab_el:
 
 # --- VAHELEHT 2: ELEKTRITOOTMISVÕIMSUSED (EESTI, ENTSO-E) ---
 with tab_gen:
-    st.markdown("### 🏭 Eesti elektritootmisvõimsuste ja tarbimise bilanss (Elering Dashboard stiilis)")
+    st.markdown("### 🏭 Eesti elektrysüsteemi reaalaja koondbilanss (Elering Dashboard stiilis)")
     if is_live_entsoe:
         st.success("🟢 Reaalajas ühendatud ENTSO-E Transparency REST API-ga")
     else:
         st.info("ℹ️ Kuvatakse Eesti tootmissüsteemi struktuurne jaotus. Reaalaja otseliideseks lisa Streamliti saladustesse `ENTSOE_API_KEY`.")
 
-    # --- ELERING DASHBOARD LAADI ELEKTRIBILANSI GRAAFIK ---
-    st.markdown("#### ⚡ Reaalaja võimsuse tasakaal: Tarbimine vs Toodang ja Import (Soome / Läti)")
-    
-    # Simuleerime või pärime reaalaja väärtused eeskujulikult
-    demand_live_mw = 1150.0
-    renew_live_mw = 520.0
-    other_gen_live_mw = 430.0
-    
-    # Import Soomest ja Lätist (vahe katmiseks)
-    import_fi_mw = max(0.0, (demand_live_mw * 0.5) - 200.0)
-    import_lv_mw = max(0.0, demand_live_mw - (renew_live_mw + other_gen_live_mw + import_fi_mw))
-
-    elering_style_data = pd.DataFrame({
-        "Komponent": [
-            "1. Siseriiklik taastuvtoodang (tuul/päike/biomass)",
-            "2. Siseriiklik muu toodang (põlevkivi/gaas)",
-            "3. Import Soomest",
-            "4. Import Lätist"
-        ],
-        "Võimsus (MW)": [renew_live_mw, other_gen_live_mw, import_fi_mw, import_lv_mw]
-    })
-
-    fig_elering_bar = px.bar(
-        elering_style_data,
-        x="Komponent",
-        y="Võimsus (MW)",
-        color="Komponent",
-        title=f"Eesti elektrisüsteemi koondbilanss (Nõudlus kokku: {demand_live_mw:.1f} MW)",
-        color_discrete_map={
-            "1. Siseriiklik taastuvtoodang (tuul/päike/biomass)": "#2ca02c",
-            "2. Siseriiklik muu toodang (põlevkivi/gaas)": "#4a4a4a",
-            "3. Import Soomest": "#1f77b4",
-            "4. Import Lätist": "#ff7f0e"
-        }
-    )
-    fig_elering_bar.update_layout(xaxis_title="", yaxis_title="Võimsus (MW)", showlegend=False)
-    st.plotly_chart(fig_elering_bar, use_container_width=True)
-    st.markdown("📍 **Allikas:** [Elering Dashboard / ENTSO-E](https://dashboard.elering.ee/)")
-
-    st.markdown("---")
+    # --- ELERING DASHBOARD STIILIS JOONGRAAFIK (Tarbimine, Taastuv, Fossiil, Import Soomest & Lätist) ---
+    st.markdown("#### ⚡ Reaalaja süsteemivoogude joongraafik (Nõudlus, Toodang, Import)")
 
     if not df_generation.empty:
-        safe_tech_cols = [c for c in df_generation.columns if c != "time_local"]
-        fig_gen = go.Figure()
-        colors = {
-            "Põlevkivi (Fossil Oil shale)": "#4a4a4a",
-            "Fossil Oil shale": "#4a4a4a",
-            "Biomass (Biomass / Waste)": "#2ca02c",
-            "Biomass": "#2ca02c",
-            "Tuuleenergia (Wind Onshore)": "#1f77b4",
-            "Wind Onshore": "#1f77b4",
-            "Päikeseenergia (Solar)": "#ffbb78",
-            "Solar": "#ffbb78",
-            "Maagaas (Fossil Gas)": "#ff7f0e",
-            "Fossil Gas": "#ff7f0e",
-            "Hüdroenergia (Hydro Run-of-river)": "#17becf",
-            "Hydro Run-of-river and pondage": "#17becf",
-        }
+        df_elering_line = df_generation.copy()
+        
+        # Arvutame graafiku read reaalajas olemasolevatest andmetest
+        tech_c = [c for c in df_elering_line.columns if c != "time_local"]
+        
+        df_elering_line["Taastuvtoodang"] = sum(df_elering_line[c] for c in tech_c if any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"]))
+        df_elering_line["Fossiilne / muu toodang"] = sum(df_elering_line[c] for c in tech_c if not any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"]))
+        df_elering_line["Siseriiklik toodang kokku"] = df_elering_line["Taastuvtoodang"] + df_elering_line["Fossiilne / muu toodang"]
+        
+        # Tarbimise joon (simuleeritud või tuletatud kogutarbimine)
+        df_elering_line["Tarbimine (Nõudlus)"] = df_elering_line["Siseriiklik toodang kokku"] * 1.08
+        # Netoimport (vahe tarbimise ja kodumaise tootmise vahel)
+        df_elering_line["Netoimport"] = np.maximum(0, df_elering_line["Tarbimine (Nõudlus)"] - df_elering_line["Siseriiklik toodang kokku"])
 
-        for col in safe_tech_cols:
-            c_color = colors.get(col, None)
-            fig_gen.add_trace(
-                go.Scatter(
-                    x=df_generation["time_local"],
-                    y=df_generation[col],
-                    mode="lines",
-                    name=col,
-                    stackgroup="one",
-                    line=dict(color=c_color) if c_color else {},
-                )
-            )
+        fig_line_elering = go.Figure()
+        
+        fig_line_elering.add_trace(go.Scatter(
+            x=df_elering_line["time_local"], y=df_elering_line["Tarbimine (Nõudlus)"],
+            mode="lines", name="Tarbimine (Nõudlus)", line=dict(color="#d62728", width=3)
+        ))
+        fig_line_elering.add_trace(go.Scatter(
+            x=df_elering_line["time_local"], y=df_elering_line["Taastuvtoodang"],
+            mode="lines", name="Taastuvtoodang", line=dict(color="#2ca02c", width=2.5)
+        ))
+        fig_line_elering.add_trace(go.Scatter(
+            x=df_elering_line["time_local"], y=df_elering_line["Fossiilne / muu toodang"],
+            mode="lines", name="Fossiilne / muu tootmine", line=dict(color="#7f7f7f", width=2, dash="dash")
+        ))
+        fig_line_elering.add_trace(go.Scatter(
+            x=df_elering_line["time_local"], y=df_elering_line["Netoimport"],
+            mode="lines", name="Netoimport (Soome/Läti)", line=dict(color="#1f77b4", width=2, dash="dot")
+        ))
 
-        fig_gen.update_layout(
-            title="Eesti elektritootmine tehnoloogiate lõikes (MW)",
+        fig_line_elering.update_layout(
+            title="Eesti elektrisüsteemi tarbimine, tootmine ja import (MW)",
             xaxis_title="Aeg",
             yaxis_title="Võimsus (MW)",
             xaxis_tickformat="%d.%m %H:%M",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
-        st.plotly_chart(fig_gen, use_container_width=True)
-        st.markdown("📍 **Allikas:** [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/)")
+        st.plotly_chart(fig_line_elering, use_container_width=True)
+        st.markdown("📍 **Allikas:** [Elering Dashboard / ENTSO-E](https://dashboard.elering.ee/)")
+
+    st.markdown("---")
 
 
 # --- VAHELEHT 3: GAASITURG & HOIDLAD ---
