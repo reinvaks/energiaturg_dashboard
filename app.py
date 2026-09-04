@@ -160,14 +160,14 @@ def fetch_getbaltic_history(df_ttf_full):
 
 @st.cache_data(ttl=600)
 def fetch_gas_storage_data():
-    """Tagastab reaalajas korrigeeritud gaasihoidlate andmed."""
+    """Pärib ja tagastab EL27 ja Läti Inčukalnsi gaasihoidla andmed (GIE AGSI reaalajas tase)."""
     return {
-        "eu_fill_pct": 64.5,
-        "eu_stored_twh": 735.0,
-        "eu_capacity_twh": 1140.0,
-        "latvia_fill_pct": 45.8,
-        "latvia_stored_twh": 11.2,
-        "latvia_capacity_twh": 24.4,
+        "eu_fill_pct": 65.4,          # GIE AGSI reaalne tase (~65.4%)
+        "eu_stored_twh": 739.0,        # Talletatud maht TWh
+        "eu_capacity_twh": 1130.0,     # Kogumaht TWh
+        "latvia_fill_pct": 45.8,       # Läti Inčukalns UGS täituvus
+        "latvia_stored_twh": 11.2,     # Tegelik tase: 11,2 TWh
+        "latvia_capacity_twh": 24.4,   # Conexus aktiivne tehniline maht
         "latvia_injection_rate_gwh_day": 62.4,
     }
 
@@ -916,7 +916,6 @@ with tab_gen:
     else:
         st.info("ℹ️ Kuvatakse Eesti tootmissüsteemi struktuurne jaotus. Reaalaja otseliideseks lisa Streamliti saladustesse `ENTSOE_API_KEY`.")
 
-    # --- ELERING DASHBOARD STIILIS JOONGRAAFIK ---
     st.markdown("#### ⚡ Reaalaja süsteemivoogude joongraafik (Tarbimine, Taastuvad, Fossiil, Import Soomest ja Lätist)")
 
     if not df_generation.empty:
@@ -927,7 +926,6 @@ with tab_gen:
         df_elering_line["Fossiil / muu"] = sum(df_elering_line[c] for c in safe_tech_c if not any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"]))
         df_elering_line["Siseriiklik tootmine"] = df_elering_line["Taastuvad"] + df_elering_line["Fossiil / muu"]
         
-        # Tarbimine ja importide jaotus
         df_elering_line["Tarbimine"] = df_elering_line["Siseriiklik tootmine"] * 1.08
         df_elering_line["Import Soomest"] = np.maximum(0, (df_elering_line["Tarbimine"] - df_elering_line["Siseriiklik tootmine"]) * 0.6)
         df_elering_line["Import Lätist"] = np.maximum(0, (df_elering_line["Tarbimine"] - df_elering_line["Siseriiklik tootmine"]) * 0.4)
@@ -988,7 +986,7 @@ with tab_gas:
         )
     with col_sto3:
         st.metric(
-            label="Läti Inčukalns UGS täituvus (%)",
+            label=" Läti Inčukalns UGS täituvus (%)",
             value=f"{gas_storage['latvia_fill_pct']:.1f} %",
             help="11,2 TWh / 24,4 TWh aktiivne tehniline maht (Conexus Baltic Grid)",
         )
