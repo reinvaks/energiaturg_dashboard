@@ -299,11 +299,11 @@ def get_european_day_ahead_map_data(target_date, df_short_all):
         {"iso_a3": "FRA", "code": "FR", "country": "Prantsusmaa", "price": 49.2, "lat": 46.6, "lon": 2.2},
         {"iso_a3": "NLD", "code": "NL", "country": "Holland", "price": 74.1, "lat": 52.8, "lon": 5.3},
         {"iso_a3": "BEL", "code": "BE", "country": "Belgia", "price": 72.8, "lat": 50.3, "lon": 4.5},
-        {"iso_a3": "GBR", "code": "UK", "country": "Ühendkuningriik", "price": 84.5, "lat": 53.8, "lon": -1.8},
+        {"iso_a3": "GBR", "code": "UK", "country": "Ühendkuningriik", "price": 84.5, "lat": 54.5, "lon": -2.5},
         {"iso_a3": "ESP", "code": "ES", "country": "Hispaania", "price": 54.0, "lat": 40.2, "lon": -3.7},
         {"iso_a3": "PRT", "code": "PT", "country": "Portugal", "price": 53.8, "lat": 39.5, "lon": -8.2},
         {"iso_a3": "ITA", "code": "IT", "country": "Itaalia", "price": 105.2, "lat": 42.5, "lon": 12.5},
-        {"iso_a3": "AUT", "code": "AT", "country": "Austria", "price": 81.0, "lat": 47.6, "lon": 14.2},
+        {"iso_a3": "AUT", "code": "AT", "country": "Austria", "price": 81.0, "lat": 47.5, "lon": 14.5},
         {"iso_a3": "CHE", "code": "CH", "country": "Šveits", "price": 86.5, "lat": 46.8, "lon": 8.2},
         {"iso_a3": "CZE", "code": "CZ", "country": "Tšehhi", "price": 82.3, "lat": 49.8, "lon": 15.5},
         {"iso_a3": "SVK", "code": "SK", "country": "Slovakkia", "price": 83.0, "lat": 48.7, "lon": 19.7},
@@ -311,8 +311,8 @@ def get_european_day_ahead_map_data(target_date, df_short_all):
         {"iso_a3": "ROU", "code": "RO", "country": "Rumeenia", "price": 98.1, "lat": 45.9, "lon": 24.9},
         {"iso_a3": "BGR", "code": "BG", "country": "Bulgaaria", "price": 97.5, "lat": 42.7, "lon": 25.5},
         {"iso_a3": "GRC", "code": "GR", "country": "Kreeka", "price": 102.8, "lat": 39.0, "lon": 22.0},
-        {"iso_a3": "SVN", "code": "SI", "country": "Sloveenia", "price": 85.0, "lat": 46.1, "lon": 14.8},
-        {"iso_a3": "HRV", "code": "HR", "country": "Horvaatia", "price": 88.5, "lat": 44.8, "lon": 16.5},
+        {"iso_a3": "SVN", "code": "SI", "country": "Sloveenia", "price": 85.0, "lat": 46.1, "lon": 15.0},
+        {"iso_a3": "HRV", "code": "HR", "country": "Horvaatia", "price": 88.5, "lat": 45.1, "lon": 15.5},
         {"iso_a3": "IRL", "code": "IE", "country": "Iirimaa", "price": 86.0, "lat": 53.4, "lon": -8.0},
     ]
 
@@ -620,7 +620,6 @@ with tab_ee_core:
         "taastuvenergia võimsuste kasvust, gaasitarbimisest ja sektori investeeringutest."
     )
 
-    # 1. Elektritarbimine ja kodumaine tootmine
     st.markdown("#### 1. Elektritarbimine ja kodumaine tootmine (jooksva aasta seisuga)")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric(label="Eesti elektritarbimine (YTD)", value="5.8 TWh", delta="+2.1% vs eelm. aasta")
@@ -631,9 +630,7 @@ with tab_ee_core:
 
     st.markdown("---")
 
-    # 2. Elektri lõpphind Läänemere riikides (Eurostat graafik, Eesti esile tõstetud)
     st.markdown("#### 2. Elektri lõpphind Läänemere riikides tarbijate lõikes (€/kWh, koos maksudega)")
-    
     price_data = pd.DataFrame({
         "Riik": ["Eesti", "Soome", "Läti", "Leedu", "Rootsi", "Poola", "Taani",
                  "Eesti", "Soome", "Läti", "Leedu", "Rootsi", "Poola", "Taani"],
@@ -657,7 +654,6 @@ with tab_ee_core:
 
     st.markdown("---")
 
-    # 3. Elektrivõrku ühendatud tootmisvõimsused (viimase 5a)
     st.markdown("#### 3. Installeeritud tootmisvõimsused viimase 5 aasta lõikes (MW)")
     cap_5y = pd.DataFrame({
         "Aasta": ["2022", "2023", "2024", "2025", "2026"],
@@ -671,7 +667,6 @@ with tab_ee_core:
 
     st.markdown("---")
 
-    # 4. Uued tootmisvõimsused viimase 10 aasta jooksul
     st.markdown("#### 4. Eesti võrku lisandunud uus tootmisvõimsus aastate lõikes (MW)")
     fig_new_cap = go.Figure()
     years_10 = ["2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024", "2025", "2026 (YTD)"]
@@ -686,7 +681,6 @@ with tab_ee_core:
 
     st.markdown("---")
 
-    # 5. Maagaasi jooksva aasta tarbimine
     st.markdown("#### 5. Maagaasi tarbimine (jooksva aasta maht vs eelmise aasta sama periood)")
     gc1, gc2, gc3 = st.columns(3)
     gc1.metric(label="Maagaasi tarbimine (YTD 2026)", value="3.4 TWh", help="Elering gaasivõrgu andmed")
@@ -696,7 +690,6 @@ with tab_ee_core:
 
     st.markdown("---")
 
-    # 6. Energeetika investeeringud Eestisse
     st.markdown("#### 6. Eestisse tehtud energeetika investeeringud (M€, Statistikaamet)")
     inv_data = pd.DataFrame({
         "Aasta": ["2021", "2022", "2023", "2024", "2025"],
@@ -809,9 +802,7 @@ with tab_el:
 
     st.markdown("---")
 
-    # --- EUROOPA HINNAGAART ---
     st.markdown("#### 2. Euroopa päeva-ette elektrihindade kaart (€/MWh)")
-
     col_m1, col_m2 = st.columns([1, 3])
     with col_m1:
         map_date_choice = st.date_input(
@@ -880,12 +871,10 @@ with tab_el:
             coloraxis_colorbar=dict(title="€/MWh", ticks="outside"),
         )
         st.plotly_chart(fig_map, use_container_width=True)
-
         st.markdown("📍 **Allikas:** [ENTSO-E Transparency Platform / Nord Pool](https://transparency.entsoe.eu/)")
 
     st.markdown("---")
 
-    # 3. Pikem ajalugu koos Läti ja Leedu valikuga
     st.markdown(f"#### 3. Piirkondade päeva keskmised hinnad ({selected_period_label})")
     selected_hist_regions = st.multiselect(
         "Vali piirkonnad ajaloo graafikul:",
@@ -927,21 +916,18 @@ with tab_gen:
     else:
         st.info("ℹ️ Kuvatakse Eesti tootmissüsteemi struktuurne jaotus. Reaalaja otseliideseks lisa Streamliti saladustesse `ENTSOE_API_KEY`.")
 
+    # Turvaline reaalaja energiasaldo / tootmise bilanss
     if not df_generation.empty:
-        tech_cols = [c for c in df_generation.columns if c != "time_local"]
-
-        # --- LISATUD UUS GRAAFIK: Tänane elektritootmise bilanss (Nõudlus, Taastuv, Mittetaastuv, Import) ---
-        st.markdown("#### ⚡ Tänane elektritootmise ja -tarbimise bilanss (hetkeseisuga)")
+        safe_tech_cols = [c for c in df_generation.columns if c != "time_local"]
         last_gen_row = df_generation.iloc[-1]
         
-        renew_now = sum(last_gen_row[c] for c in tech_cols if any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"]))
-        non_renew_now = sum(last_gen_row[c] for c in tech_cols if not any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"]))
+        renew_now = sum(last_gen_row[c] for c in safe_tech_cols if any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"]))
+        non_renew_now = sum(last_gen_row[c] for c in safe_tech_cols if not any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"]))
         total_dom_gen = renew_now + non_renew_now
-        
-        # Oletuslik tarbimine (generation + net import / saldo)
         estimated_demand = total_dom_gen * 1.08 
         net_import = max(0.0, estimated_demand - total_dom_gen)
 
+        st.markdown("#### ⚡ Tänane elektritootmise ja -tarbimise bilanss (hetkeseisuga)")
         balance_df = pd.DataFrame({
             "Kategooria": ["Taastuvtoodang", "Mittetaastuvtoodang", "Netoimport / Saldo"],
             "Võimsus (MW)": [renew_now, non_renew_now, net_import]
@@ -977,7 +963,7 @@ with tab_gen:
             "Hydro Run-of-river and pondage": "#17becf",
         }
 
-        for col in tech_cols:
+        for col in safe_tech_cols:
             c_color = colors.get(col, None)
             fig_gen.add_trace(
                 go.Scatter(
