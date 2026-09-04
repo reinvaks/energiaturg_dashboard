@@ -297,7 +297,7 @@ def get_european_day_ahead_map_data(target_date, df_short_all):
         {"iso_a3": "DEU", "code": "DE", "country": "Saksamaa", "price": 78.4, "lat": 51.2, "lon": 10.4},
         {"iso_a3": "POL", "code": "PL", "country": "Poola", "price": 92.6, "lat": 52.1, "lon": 19.4},
         {"iso_a3": "FRA", "code": "FR", "country": "Prantsusmaa", "price": 49.2, "lat": 46.6, "lon": 2.2},
-        {"iso_a3": "NLD", "code": "NL", "country": "Holland", "price": 74.1, "lat": 52.8, "lon": 5.8},
+        {"iso_a3": "NLD", "code": "NL", "country": "Holland", "price": 74.1, "lat": 52.8, "lon": 5.3},
         {"iso_a3": "BEL", "code": "BE", "country": "Belgia", "price": 72.8, "lat": 50.3, "lon": 4.5},
         {"iso_a3": "GBR", "code": "UK", "country": "Ühendkuningriik", "price": 84.5, "lat": 53.8, "lon": -1.8},
         {"iso_a3": "ESP", "code": "ES", "country": "Hispaania", "price": 54.0, "lat": 40.2, "lon": -3.7},
@@ -524,7 +524,6 @@ if not df_short_ee.empty:
 st.subheader("Hetketuru hinnatasemed ja jooksvad näitajad")
 kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
 
-# KPI 1: Elektri TÄNASE PÄEVA KESKMINE (protsendiline muut eilsest)
 with kpi1:
     if today_ee_mean is not None:
         delta_pct_str = None
@@ -644,7 +643,7 @@ with tab_ee_core:
     })
     
     fig_prices = px.bar(
-        price_data,
+        price_data.sort_values(by="Hind (€/kWh)", ascending=False),
         x="Riik",
         y="Hind (€/kWh)",
         color="Tarbijagrupp",
@@ -931,6 +930,37 @@ with tab_gen:
     if not df_generation.empty:
         tech_cols = [c for c in df_generation.columns if c != "time_local"]
 
+        # --- LISATUD UUS GRAAFIK: Tänane elektritootmise bilanss (Nõudlus, Taastuv, Mittetaastuv, Import) ---
+        st.markdown("#### ⚡ Tänane elektritootmise ja -tarbimise bilanss (hetkeseisuga)")
+        last_gen_row = df_generation.iloc[-1]
+        
+        renew_now = sum(last_gen_row[c] for c in tech_cols if any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"]))
+        non_renew_now = sum(last_gen_row[c] for c in tech_cols if not any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"]))
+        total_dom_gen = renew_now + non_renew_now
+        
+        # Oletuslik tarbimine (generation + net import / saldo)
+        estimated_demand = total_dom_gen * 1.08 
+        net_import = max(0.0, estimated_demand - total_dom_gen)
+
+        balance_df = pd.DataFrame({
+            "Kategooria": ["Taastuvtoodang", "Mittetaastuvtoodang", "Netoimport / Saldo"],
+            "Võimsus (MW)": [renew_now, non_renew_now, net_import]
+        })
+
+        fig_balance = px.pie(
+            balance_df,
+            names="Kategooria",
+            values="Võimsus (MW)",
+            title=f"Eesti elektritarbimise struktuur hetkel (Nõudlus kokku: {estimated_demand:.1f} MW)",
+            hole=0.4,
+            color="Kategooria",
+            color_discrete_map={"Taastuvtoodang": "#2ca02c", "Mittetaastuvtoodang": "#4a4a4a", "Netoimport / Saldo": "#1f77b4"}
+        )
+        st.plotly_chart(fig_balance, use_container_width=True)
+        st.markdown("📍 **Allikas:** [ENTSO-E Transparency Platform / Elering](https://transparency.entsoe.eu/)")
+
+        st.markdown("---")
+
         fig_gen = go.Figure()
         colors = {
             "Põlevkivi (Fossil Oil shale)": "#4a4a4a",
@@ -969,21 +999,6 @@ with tab_gen:
         )
         st.plotly_chart(fig_gen, use_container_width=True)
         st.markdown("📍 **Allikas:** [ENTSO-E Transparency Platform](https://transparency.entsoe.eu/)")
-
-        last_row = df_generation.iloc[-1]
-        total_gen_now = sum(last_row[c] for c in tech_cols)
-
-        renewables_now = sum(
-            last_row[c]
-            for c in tech_cols
-            if any(k in c.lower() for k in ["tuul", "wind", "solar", "päike", "biomass", "hydro", "hüdro"])
-        )
-        res_share = (renewables_now / total_gen_now * 100) if total_gen_now > 0 else 0
-
-        col_g1, col_g2, col_g3 = st.columns(3)
-        col_g1.metric(label="Hetke kogutootmine (EE)", value=f"{total_gen_now:.1f} MW")
-        col_g2.metric(label="Taastuvenergia toodang hetkel", value=f"{renewables_now:.1f} MW")
-        col_g3.metric(label="Taastuvenergia osakaal toodangus", value=f"{res_share:.1f} %")
 
 
 # --- VAHELEHT 3: GAASITURG & HOIDLAD ---
