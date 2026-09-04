@@ -634,39 +634,50 @@ with tab_ee_core:
     # 1. Elektritarbimine ja kodumaine tootmine
     st.markdown("#### 1. Elektritarbimine ja kodumaine tootmine (jooksva aasta seisuga)")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric(label="Eesti elektritarbimine (YTD)", value="5.8 TWh", delta="+2.1% vs eile/eelm. aasta")
+    c1.metric(label="Eesti elektritarbimine (YTD)", value="5.8 TWh", delta="+2.1% vs eelm. aasta")
     c2.metric(label="Kodumaine tootmine kokku", value="5.2 TWh", delta="+4.5% vs eelm. aasta")
     c3.metric(label="Taastuvenergia toodang", value="2.6 TWh", delta="50.0% kogutoodangust")
     c4.metric(label="Mittetaastuv tootmine", value="2.6 TWh", delta="Põlevkivi & maagaas")
+    st.caption("📍 **Allikas:** Elering AS (Juhtimiskeskuse andmed ja avalikud tarbimisstatistikad).")
 
     st.markdown("---")
 
-    # 2. Elektri lõpphind Läänemere riikidega (Eurostat, v.a Saksamaa)
-    st.markdown("#### 2. Elektri lõpphind tarbijate lõikes (€/kWh, koos maksudega / Eurostat)")
+    # 2. Elektri lõpphind Läänemere riikides (Eurostat, v.a Saksamaa)
+    st.markdown("#### 2. Elektri lõpphind Läänemere riikides tarbijate lõikes (€/kWh, koos maksudega)")
     
     price_data = pd.DataFrame({
         "Riik": ["Eesti", "Soome", "Läti", "Leedu", "Rootsi", "Poola", "Taani"],
         "Kodutarbijad (€/kWh)": [0.212, 0.175, 0.224, 0.231, 0.182, 0.218, 0.315],
         "Äritarbijad (€/kWh)": [0.145, 0.118, 0.152, 0.158, 0.125, 0.162, 0.205],
     })
-    st.dataframe(price_data, hide_index=True, use_container_width=True)
-    st.caption("Allikas: Eurostat (energia lõpphinnad majapidamistele ja tööstusele).")
+
+    # Muudame Eurostati tabeli graafikuks
+    fig_prices = px.bar(
+        price_data.melt(id_vars="Riik", value_vars=["Kodutarbijad (€/kWh)", "Äritarbijad (€/kWh)"], var_name="Tarbijagrupp", value_name="Hind (€/kWh)"),
+        x="Riik",
+        y="Hind (€/kWh)",
+        color="Tarbijagrupp",
+        barmode="group",
+        title="Elektri lõpphinnad Läänemere piirkonnas (Eurostat)",
+        color_discrete_map={"Kodutarbijad (€/kWh)": "#1f77b4", "Äritarbijad (€/kWh)": "#ff7f0e"}
+    )
+    fig_prices.update_layout(xaxis_title="Riik", yaxis_title="Hind (€/kWh)")
+    st.plotly_chart(fig_prices, use_container_width=True)
+    st.caption("📍 **Allikas:** Eurostat (energiatoodete ja -teenuste lõpphinnad majapidamistele ning tööstusele).")
 
     st.markdown("---")
 
-    # 3. Elektrivõrku ühendatud tootmisvõimsused (viimane 5a)
+    # 3. Elektrivõrku ühendatud tootmisvõimsused (viimase 5a)
     st.markdown("#### 3. Installeeritud tootmisvõimsused viimase 5 aasta lõikes (MW)")
     cap_5y = pd.DataFrame({
-        "Aasta": [2022, 2023, 2024, 2025, 2026 (eeldus)],
+        "Aasta": ["2022", "2023", "2024", "2025", "2026"],
         "Tuuleenergia (MW)": [410.0, 465.0, 710.0, 950.0, 1180.0],
         "Päikeseenergia (MW)": [500.0, 720.0, 1100.0, 1450.0, 1850.0],
         "Põlevkivi ja muud (MW)": [1330.0, 1330.0, 1250.0, 1200.0, 1150.0],
         "Maagaas / Koostootmine (MW)": [390.0, 390.0, 410.0, 420.0, 430.0],
     })
-    # Asendame stringi rea puhtaks aastaks
-    cap_5y["Aasta"] = ["2022", "2023", "2024", "2025", "2026"]
     st.dataframe(cap_5y, hide_index=True, use_container_width=True)
-    st.caption("Allikas: Elering AS, varustuskindluse aruanded.")
+    st.caption("📍 **Allikas:** Elering AS (Varustuskindluse aruanded ja turuülevaated).")
 
     st.markdown("---")
 
@@ -681,6 +692,7 @@ with tab_ee_core:
     fig_new_cap.add_trace(go.Bar(name="Päikeseenergia lisandunud (MW)", x=years_10, y=solar_added, marker_color="#ff7f0e"))
     fig_new_cap.update_layout(barmode="stack", title="Uute taastuvenergia võimsuste turule tulek (2017–2026)", xaxis_title="Aasta", yaxis_title="Lisandunud võimsus (MW)")
     st.plotly_chart(fig_new_cap, use_container_width=True)
+    st.caption("📍 **Allikas:** Elering AS (Aruanded ja võrguga liitunud tootmisseadmete statistika).")
 
     st.markdown("---")
 
@@ -690,6 +702,7 @@ with tab_ee_core:
     gc1.metric(label="Maagaasi tarbimine (YTD 2026)", value="3.4 TWh", help="Elering gaasivõrgu andmed")
     gc2.metric(label="Maagaasi tarbimine (YTD 2025)", value="3.7 TWh", help="Eelmise aasta sama periood")
     gc3.metric(label="Aastane muutus", value="-8.1 %", delta_color="inverse")
+    st.caption("📍 **Allikas:** Elering Gaas (Ülekandevõrgu andmed ja bilansistatistika).")
 
     st.markdown("---")
 
@@ -703,7 +716,7 @@ with tab_ee_core:
         "Kokku investeeringuid (M€)": [272.7, 358.6, 556.0, 648.7, 730.5],
     })
     st.dataframe(inv_data, hide_index=True, use_container_width=True)
-    st.caption("Allikas: Statistikaamet (keskkonna- ja energeetikainvesteeringute majandusnäitajad).")
+    st.caption("📍 **Allikas:** Statistikaamet (keskkonna- ja energeetikainvesteeringute majandusnäitajad).")
 
 
 # --- VAHELEHT 1: ELEKTER (REGIOONILINE VÕRDLUS JA EUROOPA KAART) ---
@@ -715,6 +728,7 @@ with tab_el:
         options=["EE", "LV", "LT", "FI"],
         default=["EE", "LV", "LT", "FI"],
         help="Vali piirkonnad (sh Läti ja Leedu), mida soovid graafikul kõrvutada",
+        key="sel_reg_el_tab",
     )
 
     df_short_display = (
@@ -1088,11 +1102,10 @@ with tab_gen:
     st.caption("📍 **Allikas:** ENTSO-E Transparency Platform (`Actual Generation per Production Type [16.1.B&C]`) / Elering.")
 
 
-# --- VAHELEHT 3: GAASITURG & HOIDLAD (BALTI / INČUKALNS) ---
+# --- VAHELEHT 3: GAASITURG & HOIDLAD ---
 with tab_gas:
     st.markdown("### 🔥 Maagaasi hinnad ja hoidlate täituvus")
 
-    # 1. Hoidlate tegelik hetkeseis (EL27 vs Inčukalns)
     col_sto1, col_sto2, col_sto3, col_sto4 = st.columns(4)
     with col_sto1:
         st.metric(
@@ -1123,7 +1136,6 @@ with tab_gas:
 
     st.markdown("---")
 
-    # 2. Turuhinnad: TTF ja GET Baltic
     st.markdown("#### 2. Maagaasi võrdlushinnad: Dutch TTF vs GET Baltic (BGSI)")
     if not df_ttf_filtered.empty and not df_getbaltic_filtered.empty:
         fig_gas = go.Figure()
