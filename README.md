@@ -25,3 +25,10 @@ Nord Pool UMM otsepäringu fallback on `data/umm.json`, mida uuendab `.github/wo
 - Windows-1252 decoding; price is always column 2.
 - Zero/no-index values are not displayed.
 - No TTF+spread, no guessed numeric column, no synthetic fallback.
+
+## V8.1 hotfix
+- Fixed a packaging regression where `fetch_getbaltic_history()` referenced
+  `EEX_LVAEST_CURRENT_URL` / `EEX_LVAEST_HISTORY_URL` without defining them.
+- Both constants are now defined in all three entrypoints.
+- The function also contains fixed public-URL fallbacks, so this exact NameError
+  cannot take down the app again.

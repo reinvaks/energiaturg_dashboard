@@ -45,6 +45,8 @@ HTTP.mount(
 
 EEX_TTF_HISTORY_URL = "https://gasandregistry.eex.com/Gas/NGP/TTF_NGP_60_Days.csv"
 EEX_TTF_CURRENT_URL = "https://gasandregistry.eex.com/Gas/NGP/TTF_NGP_15_Mins.csv"
+EEX_LVAEST_HISTORY_URL = "https://gasandregistry.eex.com/Gas/NGP/LVA-EST_NGP_60_Days.csv"
+EEX_LVAEST_CURRENT_URL = "https://gasandregistry.eex.com/Gas/NGP/LVA-EST_NGP_15_Mins.csv"
 EEX_EUA_AUCTION_URL = (
     "https://public.eex-group.com/eex/eua-auction-report/"
     "emission-spot-primary-market-auction-report-2026-data.xlsx"
@@ -584,7 +586,15 @@ def fetch_realtime_commodity_data(function_name, symbol_or_interval):
 @st.cache_data(ttl=900)
 def fetch_getbaltic_history(df_ttf_full):
     """Official EEX LVA-EST NGP for the common Estonia-Latvia gas market."""
-    return _fetch_eex_ngp_exact(EEX_LVAEST_CURRENT_URL, EEX_LVAEST_HISTORY_URL)
+    current_url = globals().get(
+        "EEX_LVAEST_CURRENT_URL",
+        "https://gasandregistry.eex.com/Gas/NGP/LVA-EST_NGP_15_Mins.csv",
+    )
+    history_url = globals().get(
+        "EEX_LVAEST_HISTORY_URL",
+        "https://gasandregistry.eex.com/Gas/NGP/LVA-EST_NGP_60_Days.csv",
+    )
+    return _fetch_eex_ngp_exact(current_url, history_url)
 
 
 @st.cache_data(ttl=600)
@@ -1324,7 +1334,7 @@ def normalize_umm_dataframe(rows):
 col_title, col_ctrl = st.columns([3, 2])
 with col_title:
     st.title("Energiaturu ja reservide reaalaja armatuurlaud")
-    st.caption("Build 8.0 • UMM + validated EEX gas")
+    st.caption("Build 8.1 • UMM + validated EEX gas • LVA-EST fixed")
     st.caption(f"Käivitusfail: {Path(__file__).name}")
 with col_ctrl:
     sub_col1, sub_col2 = st.columns([2, 1])
