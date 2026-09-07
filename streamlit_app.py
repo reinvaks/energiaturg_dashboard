@@ -4,11 +4,14 @@ from io import BytesIO, StringIO
 from zoneinfo import ZoneInfo
 from pathlib import Path
 import re
+import csv
+import io
 import xml.etree.ElementTree as ET
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import requests
+import urllib3
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import streamlit as st
@@ -42,8 +45,6 @@ HTTP.mount(
 
 EEX_TTF_HISTORY_URL = "https://gasandregistry.eex.com/Gas/NGP/TTF_NGP_60_Days.csv"
 EEX_TTF_CURRENT_URL = "https://gasandregistry.eex.com/Gas/NGP/TTF_NGP_15_Mins.csv"
-EEX_LVAEST_HISTORY_URL = "https://gasandregistry.eex.com/Gas/NGP/LVA-EST_NGP_60_Days.csv"
-EEX_LVAEST_CURRENT_URL = "https://gasandregistry.eex.com/Gas/NGP/LVA-EST_NGP_15_Mins.csv"
 EEX_EUA_AUCTION_URL = (
     "https://public.eex-group.com/eex/eua-auction-report/"
     "emission-spot-primary-market-auction-report-2026-data.xlsx"
@@ -423,149 +424,116 @@ def fetch_elering_long_history_multi(years=5):
 
 
 
-def _parse_eex_ngp_csv(raw_bytes):
-    """Parse EEX NGP current/history CSV defensively.
+def _parse_eex_ngp_exact(text, target_dates=None):
+    """Exact EEX NGP CSV parser.
 
-    EEX may vary separators/headers. We only accept rows with a parseable
-    delivery date and a plausible €/MWh value, prioritising semantic
-    date/NGP/price columns. No numeric guessing outside plausible gas prices.
+    Layout: Gasday;IndexValue (€/MWh);IndexVolume;Status;Timestamp
     """
-    text = raw_bytes.decode("utf-8-sig", errors="replace")
+    result = []
+    reader = csv.reader(io.StringIO(text), delimiter=";")
+    header = next(reader, None)
+    if not header or len(header) < 2:
+        return pd.DataFrame(columns=["Date", "Close", "Status", "Timestamp"])
 
-    frames = []
-    for sep in (";", ",", "\t"):
-        try:
-            df = pd.read_csv(StringIO(text), sep=sep, header=None, dtype=str, engine="python")
-            if df.shape[1] > 1 and not df.empty:
-                frames.append(df)
-        except Exception:
-            pass
-    if not frames:
-        try:
-            frames.append(pd.read_csv(StringIO(text), sep=None, header=None, dtype=str, engine="python"))
-        except Exception:
-            return _empty_market_df()
+    for row in reader:
+        if len(row) < 2:
+            continue
 
-    def norm(v):
-        if v is None or (isinstance(v, float) and pd.isna(v)):
+        try:
+            dt = pd.to_datetime(row[0].strip(), format="%d/%m/%Y", errors="raise")
+        except Exception:
+            continue
+
+        if target_dates and dt.date() not in target_dates:
+            continue
+
+        try:
+            price = float(row[1].strip().replace(",", "."))
+        except Exception:
+            continue
+
+        # EEX zero means no valid index value; never show it as a price.
+        if price == 0:
+            continue
+
+        result.append({
+            "Date": dt,
+            "Close": price,
+            "Status": row[3].strip() if len(row) > 3 else "",
+            "Timestamp": row[4].strip() if len(row) > 4 else "",
+        })
+
+    if not result:
+        return pd.DataFrame(columns=["Date", "Close", "Status", "Timestamp"])
+
+    df = pd.DataFrame(result)
+    return (
+        df.sort_values(["Date", "Timestamp"], na_position="first")
+          .drop_duplicates("Date", keep="last")
+          .reset_index(drop=True)
+    )
+
+
+def _fetch_eex_public_csv(url):
+    """Fetch fixed public EEX NGP CSV.
+
+    EEX's public host can present an incomplete TLS chain to Linux/Python.
+    Retry without verification only for this fixed public data URL and send
+    no credentials or secrets.
+    """
+    try:
+        r = requests.get(url, timeout=20)
+        r.raise_for_status()
+    except requests.exceptions.SSLError:
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        try:
+            r = requests.get(url, timeout=20, verify=False)
+            r.raise_for_status()
+        except Exception:
             return ""
-        s = str(v).replace("\xa0", " ").replace("\n", " ").replace("\r", " ")
-        return re.sub(r"\s+", " ", s).strip().lower()
+    except Exception:
+        return ""
 
-    def number(v):
-        s = norm(v).replace("eur/mwh", "").replace("€/mwh", "").replace("eur", "")
-        s = s.replace(" ", "")
-        # European decimals.
-        if s.count(",") == 1 and s.count(".") == 0:
-            s = s.replace(",", ".")
-        else:
-            s = s.replace(",", "")
-        s = re.sub(r"[^0-9.\-]", "", s)
-        try:
-            x = float(s)
-            return x if -500.0 <= x <= 1000.0 else None
-        except Exception:
-            return None
-
-    def dateval(v):
-        s = norm(v)
-        if not s or not re.search(r"\d", s):
-            return pd.NaT
-        return pd.to_datetime(s, errors="coerce", dayfirst=True)
-
-    candidates = []
-
-    for df in frames:
-        # First find a semantic header row.
-        header_row = None
-        date_col = None
-        price_col = None
-        for r in range(min(20, len(df))):
-            vals = [norm(v) for v in df.iloc[r].tolist()]
-            dcols = [i for i, v in enumerate(vals)
-                     if "date" in v or "delivery" in v or "gas day" in v or v in {"d", "day"}]
-            pcols = [i for i, v in enumerate(vals)
-                     if "ngp" in v or "price" in v or "eur/mwh" in v or "€/mwh" in v]
-            if dcols and pcols:
-                header_row = r
-                date_col = dcols[0]
-                # Prefer explicitly NGP-labelled price column.
-                price_col = next((i for i in pcols if "ngp" in vals[i]), pcols[0])
-                break
-
-        rows = []
-        if header_row is not None:
-            for r in range(header_row + 1, len(df)):
-                dt = dateval(df.iat[r, date_col]) if date_col < df.shape[1] else pd.NaT
-                px = number(df.iat[r, price_col]) if price_col < df.shape[1] else None
-                if pd.notna(dt) and px is not None:
-                    rows.append((dt, px))
-
-        # Fallback: row-wise semantic extraction, but only if a row clearly
-        # contains one date and at least one plausible price.
-        if not rows:
-            for r in range(len(df)):
-                vals = df.iloc[r].tolist()
-                dates = [(i, dateval(v)) for i, v in enumerate(vals)]
-                dates = [(i, d) for i, d in dates if pd.notna(d)]
-                if not dates:
-                    continue
-                nums = [(i, number(v)) for i, v in enumerate(vals)]
-                nums = [(i, n) for i, n in nums if n is not None]
-                if not nums:
-                    continue
-                di, dt = dates[0]
-                # Prefer a numeric value to the right of the date.
-                right = [(i, n) for i, n in nums if i > di]
-                pi, px = (right[0] if right else nums[-1])
-                rows.append((dt, px))
-
-        if rows:
-            out = pd.DataFrame(rows, columns=["Date", "Close"]).dropna()
-            out["Date"] = pd.to_datetime(out["Date"], errors="coerce")
-            out["Close"] = pd.to_numeric(out["Close"], errors="coerce")
-            out = out.dropna()
-            out = out[(out["Close"] >= -500) & (out["Close"] <= 1000)]
-            out = out.drop_duplicates("Date", keep="last").sort_values("Date")
-            if not out.empty:
-                candidates.append(out)
-
-    if not candidates:
-        return _empty_market_df()
-
-    # Prefer the parse that yielded the most dated observations.
-    return max(candidates, key=len).reset_index(drop=True)
+    # EEX NGP header uses Windows-1252 for the euro sign.
+    try:
+        return r.content.decode("cp1252")
+    except Exception:
+        return r.content.decode("utf-8", errors="replace")
 
 
-def _fetch_eex_ngp(history_url, current_url):
-    """Combine official EEX 60-day history with D/D+1/D+2 current NGP."""
-    parts = []
-    rh = _safe_get(history_url)
-    if rh is not None:
-        hist = _parse_eex_ngp_csv(rh.content)
-        if not hist.empty:
-            parts.append(hist)
+def _fetch_eex_ngp_exact(current_url, history_url):
+    today = datetime.now(TALLINN_TZ).date()
+    tomorrow = today + timedelta(days=1)
 
-    rc = _safe_get(current_url)
-    if rc is not None:
-        cur = _parse_eex_ngp_csv(rc.content)
-        if not cur.empty:
-            parts.append(cur)
+    current_text = _fetch_eex_public_csv(current_url)
+    current = (
+        _parse_eex_ngp_exact(current_text, {today, tomorrow})
+        if current_text else pd.DataFrame()
+    )
 
-    if not parts:
-        return _empty_market_df()
+    history_text = _fetch_eex_public_csv(history_url)
+    history = (
+        _parse_eex_ngp_exact(history_text)
+        if history_text else pd.DataFrame()
+    )
 
-    out = pd.concat(parts, ignore_index=True)
-    out = out.dropna(subset=["Date", "Close"])
-    out = out.drop_duplicates("Date", keep="last").sort_values("Date")
-    return out.reset_index(drop=True)
+    frames = [df for df in (history, current) if not df.empty]
+    if not frames:
+        return pd.DataFrame(columns=["Date", "Close", "Status", "Timestamp"])
+
+    out = pd.concat(frames, ignore_index=True)
+    return (
+        out.sort_values(["Date", "Timestamp"], na_position="first")
+           .drop_duplicates("Date", keep="last")
+           .reset_index(drop=True)
+    )
 
 
 @st.cache_data(ttl=900)
 def fetch_realtime_commodity_data(function_name, symbol_or_interval):
     """Validated sources only. No synthetic fallback values."""
     if function_name == "NATURAL_GAS" and symbol_or_interval == "TTF":
-        return _fetch_eex_ngp(EEX_TTF_HISTORY_URL, EEX_TTF_CURRENT_URL)
+        return _fetch_eex_ngp_exact(EEX_TTF_CURRENT_URL, EEX_TTF_HISTORY_URL)
 
     if function_name == "BRENT":
         r = _safe_get(EIA_BRENT_HTML_URL, headers={"Accept": "text/html,*/*"})
@@ -615,13 +583,8 @@ def fetch_realtime_commodity_data(function_name, symbol_or_interval):
 
 @st.cache_data(ttl=900)
 def fetch_getbaltic_history(df_ttf_full):
-    """Current Latvia-Estonia gas reference after GET Baltic migration to EEX.
-
-    GET Baltic trading migrated to EEX on 9 Sep 2025. For a current EE/LV
-    market reference we therefore use official EEX LVA-EST NGP, refreshed
-    every 15 minutes, instead of fabricating a legacy BGSI value.
-    """
-    return _fetch_eex_ngp(EEX_LVAEST_HISTORY_URL, EEX_LVAEST_CURRENT_URL)
+    """Official EEX LVA-EST NGP for the common Estonia-Latvia gas market."""
+    return _fetch_eex_ngp_exact(EEX_LVAEST_CURRENT_URL, EEX_LVAEST_HISTORY_URL)
 
 
 @st.cache_data(ttl=600)
@@ -1361,7 +1324,7 @@ def normalize_umm_dataframe(rows):
 col_title, col_ctrl = st.columns([3, 2])
 with col_title:
     st.title("Energiaturu ja reservide reaalaja armatuurlaud")
-    st.caption("Build 7.0 • UMM + EEX gas fixed")
+    st.caption("Build 8.0 • UMM + validated EEX gas")
     st.caption(f"Käivitusfail: {Path(__file__).name}")
 with col_ctrl:
     sub_col1, sub_col2 = st.columns([2, 1])
@@ -2108,7 +2071,7 @@ with tab_gas:
             ),
         )
         st.plotly_chart(fig_gas, use_container_width=True)
-        st.markdown("📍 **Allikas:** [EEX Neutral Gas Price](https://www.eex.com/en/markets/natural-gas/gas-market-transparency) — TTF ja LVA-EST current NGP, uuendus iga 15 minuti järel.")
+        st.markdown("📍 **Allikas:** TTF: [EEX Neutral Gas Price](https://www.eex.com/en/markets/natural-gas/gas-market-transparency); GET Baltic kuvatakse ainult valideeritud andmevoo olemasolul.")
 
 
 # --- VAHELEHT 4: SAGEDUSRESERVID (BBCM) ---
