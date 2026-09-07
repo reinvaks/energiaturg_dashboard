@@ -1257,6 +1257,8 @@ def normalize_umm_dataframe(rows):
 col_title, col_ctrl = st.columns([3, 2])
 with col_title:
     st.title("Energiaturu ja reservide reaalaja armatuurlaud")
+    st.caption("Build 6.0 • UMM deploy-safe")
+    st.caption(f"Käivitusfail: {Path(__file__).name}")
 with col_ctrl:
     sub_col1, sub_col2 = st.columns([2, 1])
     with sub_col1:
@@ -1494,15 +1496,15 @@ def _fmt_metric(value, unit="", decimals=1):
 
 # --- 4. GRAAFIKUD JA VAHELEHED ---
 
-tab_ee_core, tab_el, tab_gen, tab_gas, tab_reserves, tab_oil, tab_co2, tab_umm, tab_custom = st.tabs([
+tab_ee_core, tab_el, tab_umm, tab_gen, tab_gas, tab_reserves, tab_oil, tab_co2, tab_custom = st.tabs([
     "🇪🇪 Eesti energeetika",
     "⚡ Elekter (Regioon & Euroopa kaart)",
+    "📣 Nord Pool UMM",
     "🏭 Elektritootmisvõimsused (Eesti)",
     "🔥 Gaasiturg & Hoidlad",
     "🔄 Sagedusreservid (BBCM)",
     "🛢️ Brent Nafta",
     "🌱 EU ETS Süsinikukvoot",
-    "📣 Nord Pool UMM",
     "🔍 Kohandatud perioodipäring",
 ])
 
