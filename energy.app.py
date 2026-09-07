@@ -46,6 +46,8 @@ EEX_EUA_AUCTION_URL = (
 )
 EIA_BRENT_HTML_URL = "https://www.eia.gov/dnav/pet/hist/LeafHandler.ashx?n=PET&s=RBRTE&f=D"
 AGSI_BASE = "https://agsi.gie.eu/api"
+CONEXUS_STOCKS_URL = "https://www.conexus.lv/storage-stocks"
+CONEXUS_CYCLE_URL = "https://www.conexus.lv/circle-data"
 VOLTON_AFRR_CAPACITY = "https://public-data.volton.energy/v1/afrr-capacity-price/latest.json"
 VOLTON_MFRR_CAPACITY = "https://public-data.volton.energy/v1/mfrr-capacity-price/latest.json"
 
@@ -518,9 +520,14 @@ def fetch_getbaltic_history(df_ttf_full):
 
 @st.cache_data(ttl=600)
 def fetch_gas_storage_data():
-    """GIE AGSI+ actual daily data only; no hard-coded fallback."""
+    """EU27 from GIE AGSI+; Inčukalns primary from Conexus Storage Stocks.
+
+    No synthetic or hard-coded fallback values are used for stock level.
+    GIE Latvia is used only if the Conexus page is temporarily unavailable.
+    """
     key = st.secrets.get("GIE_API_KEY", "") or st.secrets.get("GIE_AGSI_API_KEY", "")
-    empty = {
+
+    result = {
         "eu_fill_pct": float("nan"),
         "eu_stored_twh": float("nan"),
         "eu_capacity_twh": float("nan"),
@@ -528,44 +535,150 @@ def fetch_gas_storage_data():
         "latvia_stored_twh": float("nan"),
         "latvia_capacity_twh": float("nan"),
         "latvia_injection_rate_gwh_day": float("nan"),
+        "latvia_gas_day": None,
+        "latvia_source": None,
     }
-    if not key:
-        return empty
 
-    def latest(params):
-        r = _safe_get(AGSI_BASE, params=params, headers={"x-key": key})
-        if r is None:
-            return {}
+    # --- EU27: official GIE AGSI+ ---
+    if key:
+        r = _safe_get(
+            AGSI_BASE,
+            params={"type": "eu", "size": 10, "reverse": "true"},
+            headers={"x-key": key},
+        )
+        if r is not None:
+            try:
+                rows = r.json().get("data", [])
+                if rows:
+                    df = pd.DataFrame(rows)
+                    if "gasDayStart" in df.columns:
+                        df["gasDayStart"] = pd.to_datetime(df["gasDayStart"], errors="coerce")
+                        df = df.sort_values("gasDayStart", ascending=False)
+                    row = df.iloc[0]
+                    for src, dst in [
+                        ("full", "eu_fill_pct"),
+                        ("gasInStorage", "eu_stored_twh"),
+                        ("workingGasVolume", "eu_capacity_twh"),
+                    ]:
+                        try:
+                            result[dst] = float(row[src])
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    # --- Inčukalns: primary source = operator Conexus ---
+    r = _safe_get(CONEXUS_STOCKS_URL, headers={"Accept": "text/html,*/*"})
+    if r is not None:
         try:
-            rows = r.json().get("data", [])
-            if not rows:
-                return {}
-            df = pd.DataFrame(rows)
-            if "gasDayStart" in df.columns:
-                df["gasDayStart"] = pd.to_datetime(df["gasDayStart"], errors="coerce")
-                df = df.sort_values("gasDayStart", ascending=False)
-            return df.iloc[0].to_dict()
+            tables = pd.read_html(StringIO(r.text))
+            stock_df = None
+            for t in tables:
+                cols = [str(c).strip().lower() for c in t.columns]
+                joined = " | ".join(cols)
+                if "gas day" in joined and "total" in joined and "user stocks" in joined:
+                    stock_df = t.copy()
+                    break
+
+            if stock_df is not None and not stock_df.empty:
+                stock_df.columns = [str(c).strip() for c in stock_df.columns]
+                gas_col = next(c for c in stock_df.columns if "gas day" in c.lower())
+                total_col = next(c for c in stock_df.columns if c.strip().lower() == "total")
+
+                stock_df["_gas_day"] = pd.to_datetime(stock_df[gas_col], errors="coerce")
+                stock_df["_total_kwh"] = pd.to_numeric(
+                    stock_df[total_col].astype(str)
+                    .str.replace("\xa0", "", regex=False)
+                    .str.replace(" ", "", regex=False)
+                    .str.replace(r"[^0-9.\-]", "", regex=True),
+                    errors="coerce",
+                )
+                stock_df = stock_df.dropna(subset=["_gas_day", "_total_kwh"]).sort_values("_gas_day")
+                if not stock_df.empty:
+                    latest = stock_df.iloc[-1]
+                    result["latvia_stored_twh"] = float(latest["_total_kwh"]) / 1_000_000_000.0
+                    result["latvia_gas_day"] = latest["_gas_day"].date()
+                    result["latvia_source"] = "Conexus Baltic Grid"
+
+                    # Read current technical capacity from Conexus storage-cycle page.
+                    cap_r = _safe_get(CONEXUS_CYCLE_URL, headers={"Accept": "text/html,*/*"})
+                    if cap_r is not None:
+                        try:
+                            cap_tables = pd.read_html(StringIO(cap_r.text), header=None)
+                            cap_kwh = None
+                            for ct in cap_tables:
+                                for _, rr in ct.iterrows():
+                                    vals = [str(v).strip() for v in rr.tolist()]
+                                    if vals and "technical capacity" in vals[0].lower():
+                                        for v in vals[1:]:
+                                            n = pd.to_numeric(
+                                                pd.Series([v]).astype(str)
+                                                .str.replace("\xa0", "", regex=False)
+                                                .str.replace(" ", "", regex=False)
+                                                .str.replace(r"[^0-9.\-]", "", regex=True),
+                                                errors="coerce",
+                                            ).iloc[0]
+                                            if pd.notna(n) and float(n) > 1_000_000_000:
+                                                cap_kwh = float(n)
+                                                break
+                                    if cap_kwh:
+                                        break
+                                if cap_kwh:
+                                    break
+                            if cap_kwh:
+                                result["latvia_capacity_twh"] = cap_kwh / 1_000_000_000.0
+                                result["latvia_fill_pct"] = (
+                                    result["latvia_stored_twh"] / result["latvia_capacity_twh"] * 100.0
+                                )
+                        except Exception:
+                            pass
         except Exception:
-            return {}
+            pass
 
-    eu = latest({"type": "eu", "size": 10, "reverse": "true"})
-    lv = latest({"country": "LV", "size": 10, "reverse": "true"})
+    # --- Latvia fallback / auxiliary fields from GIE only if needed ---
+    if key and (
+        pd.isna(result["latvia_stored_twh"])
+        or pd.isna(result["latvia_capacity_twh"])
+        or pd.isna(result["latvia_injection_rate_gwh_day"])
+    ):
+        r = _safe_get(
+            AGSI_BASE,
+            params={"country": "LV", "size": 10, "reverse": "true"},
+            headers={"x-key": key},
+        )
+        if r is not None:
+            try:
+                rows = r.json().get("data", [])
+                if rows:
+                    df = pd.DataFrame(rows)
+                    if "gasDayStart" in df.columns:
+                        df["gasDayStart"] = pd.to_datetime(df["gasDayStart"], errors="coerce")
+                        df = df.sort_values("gasDayStart", ascending=False)
+                    row = df.iloc[0]
 
-    def num(d, k):
-        try:
-            return float(d.get(k))
-        except Exception:
-            return float("nan")
+                    def n(field):
+                        try:
+                            return float(row[field])
+                        except Exception:
+                            return float("nan")
 
-    return {
-        "eu_fill_pct": num(eu, "full"),
-        "eu_stored_twh": num(eu, "gasInStorage"),
-        "eu_capacity_twh": num(eu, "workingGasVolume"),
-        "latvia_fill_pct": num(lv, "full"),
-        "latvia_stored_twh": num(lv, "gasInStorage"),
-        "latvia_capacity_twh": num(lv, "workingGasVolume"),
-        "latvia_injection_rate_gwh_day": num(lv, "injection"),
-    }
+                    if pd.isna(result["latvia_stored_twh"]):
+                        result["latvia_stored_twh"] = n("gasInStorage")
+                        result["latvia_gas_day"] = (
+                            row["gasDayStart"].date()
+                            if "gasDayStart" in row and pd.notna(row["gasDayStart"])
+                            else None
+                        )
+                        result["latvia_source"] = "GIE AGSI+ fallback"
+                    if pd.isna(result["latvia_capacity_twh"]):
+                        result["latvia_capacity_twh"] = n("workingGasVolume")
+                    if pd.isna(result["latvia_fill_pct"]):
+                        result["latvia_fill_pct"] = n("full")
+                    result["latvia_injection_rate_gwh_day"] = n("injection")
+            except Exception:
+                pass
+
+    return result
 
 
 @st.cache_data(ttl=3600)
@@ -1763,7 +1876,7 @@ with tab_gas:
         st.metric(
             label="Läti Inčukalns UGS täituvus (%)",
             value=_fmt_metric(gas_storage["latvia_fill_pct"], " %"),
-            help="GIE AGSI+ viimati avaldatud Läti/Inčukalnsi koondandmed",
+            help="Inčukalnsi varu: Conexus Baltic Grid Storage Stocks; GIE AGSI+ ainult varuallikas",
         )
     with col_sto4:
         st.metric(
@@ -1772,7 +1885,7 @@ with tab_gas:
             delta=("/ " + _fmt_metric(gas_storage["latvia_capacity_twh"], " TWh aktiivne maht")) if pd.notna(gas_storage["latvia_capacity_twh"]) else None,
             delta_color="off",
         )
-    st.markdown("📍 **Allikas:** [GIE AGSI hoidlate andmebaas](https://agsi.gie.eu/) / [Conexus Baltic Grid](https://conexus.lv/)")
+    st.markdown("📍 **Allikas:** EL27: [GIE AGSI+](https://agsi.gie.eu/) / Inčukalns: [Conexus Baltic Grid Storage Stocks](https://www.conexus.lv/storage-stocks)")
 
     st.markdown("---")
 

@@ -34,3 +34,5 @@ GIE_API_KEY = "..."
 ## Andmekvaliteedi põhimõte
 
 Kui allikas ei vasta, API võti puudub, skeemi ei saa usaldusväärselt tõlgendada või mõõdiku definitsioon ei sobi allikaga, kuvab rakendus puuduva väärtuse. Mock-, juhuslikke, hard-coded või teistest instrumentidest tuletatud hindu/mahud ei kasutata.
+
+- Inčukalns storage stock: primary source is Conexus Baltic Grid Storage Stocks; GIE AGSI+ is Latvia fallback/cross-check only.
