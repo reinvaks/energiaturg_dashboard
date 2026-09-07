@@ -39,3 +39,15 @@ Nord Pool UMM otsepäringu fallback on `data/umm.json`, mida uuendab `.github/wo
 - Actual total load: official web-api `documentType=A65`, `processType=A16`.
 - Errors are shown in the UI instead of being swallowed.
 - YTD requests are split into monthly chunks to avoid oversized responses.
+
+## V8.3 explicit ENTSO-E diagnostics
+A connection smoke-test now runs on every app load and is always rendered near
+the top of the page. It reports:
+- missing Streamlit secret
+- network exception
+- HTTP status/body
+- ENTSO-E acknowledgement reason
+- XML parsing failure
+- number of returned data points
+
+The app can no longer silently hide the ENTSO-E failure.

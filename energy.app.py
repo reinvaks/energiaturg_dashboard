@@ -182,6 +182,87 @@ def _fetch_entsoe_load_chunks(start, end, area="EE"):
     return merged, last_diag
 
 
+
+@st.cache_data(ttl=120)
+def test_entsoe_connection():
+    """Minimal direct REST smoke test for the configured ENTSO-E token."""
+    token = st.secrets.get("ENTSOE_API_KEY", "")
+    if not token:
+        return {
+            "ok": False,
+            "stage": "secret",
+            "message": "ENTSOE_API_KEY puudub Streamlit Secrets'is",
+            "http_status": None,
+        }
+
+    now = pd.Timestamp.now(tz="UTC")
+    params = {
+        "securityToken": token,
+        "documentType": "A65",
+        "processType": "A16",
+        "outBiddingZone_Domain": ENTSOE_DOMAINS["EE"],
+        "periodStart": (now - pd.Timedelta(hours=6)).strftime("%Y%m%d%H%M"),
+        "periodEnd": now.strftime("%Y%m%d%H%M"),
+    }
+
+    try:
+        r = requests.get(
+            "https://web-api.tp.entsoe.eu/api",
+            params=params,
+            timeout=(5, 30),
+            headers={
+                "Accept": "application/xml,text/xml,*/*",
+                "User-Agent": "EnergiaturuArmatuurlaud/entsoe-smoke",
+            },
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "stage": "network",
+            "message": f"{type(exc).__name__}: {exc}",
+            "http_status": None,
+        }
+
+    body = r.text[:500]
+    if r.status_code != 200:
+        return {
+            "ok": False,
+            "stage": "http",
+            "message": body,
+            "http_status": r.status_code,
+        }
+
+    try:
+        root = ET.fromstring(r.text)
+    except ET.ParseError as exc:
+        return {
+            "ok": False,
+            "stage": "xml",
+            "message": f"XML parse error: {exc}",
+            "http_status": r.status_code,
+        }
+
+    if "acknowledgement" in root.tag.lower():
+        texts = []
+        for el in root.iter():
+            if _lname(el.tag) in {"text", "code"} and el.text:
+                texts.append(el.text.strip())
+        return {
+            "ok": False,
+            "stage": "api",
+            "message": " | ".join(texts) or "ENTSO-E acknowledgement response",
+            "http_status": r.status_code,
+        }
+
+    points = sum(1 for el in root.iter() if _lname(el.tag) == "Point")
+    return {
+        "ok": points > 0,
+        "stage": "data",
+        "message": f"HTTP 200, leitud {points} andmepunkti",
+        "http_status": r.status_code,
+    }
+
+
 @st.cache_data(ttl=300)
 def fetch_entsoe_diagnostic():
     now = pd.Timestamp.now(tz="UTC")
@@ -1437,7 +1518,7 @@ def normalize_umm_dataframe(rows):
 col_title, col_ctrl = st.columns([3, 2])
 with col_title:
     st.title("Energiaturu ja reservide reaalaja armatuurlaud")
-    st.caption("Build 8.2 • UMM + EEX gas + direct ENTSO-E REST")
+    st.caption("Build 8.3 • explicit ENTSO-E diagnostics")
     st.caption(f"Käivitusfail: {Path(__file__).name}")
 with col_ctrl:
     sub_col1, sub_col2 = st.columns([2, 1])
@@ -1457,6 +1538,22 @@ with col_ctrl:
 
 current_tallinn_time = datetime.now(timezone.utc).astimezone(TALLINN_TZ).strftime("%H:%M:%S")
 st.caption(f"Viimati värskendatud: **{current_tallinn_time}** (Eesti aeg)")
+
+entsoe_test = test_entsoe_connection()
+if entsoe_test.get("ok"):
+    st.success(
+        f"ENTSO-E ühendus: OK — {entsoe_test.get('message')}",
+        icon="✅",
+    )
+else:
+    st.error(
+        "ENTSO-E ühendus EI TÖÖTA — "
+        f"etapp: {entsoe_test.get('stage')} | "
+        f"HTTP: {entsoe_test.get('http_status') or '—'} | "
+        f"{entsoe_test.get('message')}",
+        icon="🚨",
+    )
+
 
 refresh_seconds = 0
 if auto_refresh_choice == "1 minut":
