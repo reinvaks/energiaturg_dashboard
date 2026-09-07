@@ -65,6 +65,130 @@ ENTSOE_DOMAINS = {
     "LT": "10YLT-1001A0008Q",
 }
 
+ENTSOE_PSR_NAMES = {'B01': 'Biomass', 'B02': 'Fossil Brown coal/Lignite', 'B03': 'Fossil Coal-derived gas', 'B04': 'Fossil Gas', 'B05': 'Fossil Hard coal', 'B06': 'Fossil Oil', 'B07': 'Fossil Oil shale', 'B08': 'Fossil Peat', 'B09': 'Geothermal', 'B10': 'Hydro Pumped Storage', 'B11': 'Hydro Run-of-river and poundage', 'B12': 'Hydro Water Reservoir', 'B13': 'Marine', 'B14': 'Nuclear', 'B15': 'Other renewable', 'B16': 'Solar', 'B17': 'Waste', 'B18': 'Wind Offshore', 'B19': 'Wind Onshore', 'B20': 'Other'}
+
+
+def _entsoe_status_query(params):
+    """Return (xml_text, diagnostic) from official ENTSO-E web-api."""
+    token = st.secrets.get("ENTSOE_API_KEY", "")
+    if not token:
+        return None, "ENTSOE_API_KEY puudub Streamlit Secrets'is"
+    q = dict(params)
+    q["securityToken"] = token
+    try:
+        r = requests.get(
+            "https://web-api.tp.entsoe.eu/api",
+            params=q,
+            timeout=(5, 30),
+            headers={"Accept": "application/xml,text/xml,*/*",
+                     "User-Agent": "EnergiaturuArmatuurlaud/entsoe-direct"},
+        )
+    except Exception as exc:
+        return None, f"ENTSO-E võrguviga: {type(exc).__name__}: {exc}"
+    if r.status_code != 200:
+        return None, f"ENTSO-E HTTP {r.status_code}: {r.text[:300]}"
+    try:
+        root = ET.fromstring(r.text)
+    except ET.ParseError as exc:
+        return None, f"ENTSO-E XML parse error: {exc}"
+    if "acknowledgement" in root.tag.lower():
+        reason = ""
+        for el in root.iter():
+            if _lname(el.tag) in {"text","code"} and el.text:
+                reason += el.text.strip() + " "
+        return None, f"ENTSO-E API vastus: {reason.strip() or 'Acknowledgement'}"
+    return r.text, "OK"
+
+
+def _entsoe_period_params(start, end):
+    return {
+        "periodStart": pd.Timestamp(start).tz_convert("UTC").strftime("%Y%m%d%H%M"),
+        "periodEnd": pd.Timestamp(end).tz_convert("UTC").strftime("%Y%m%d%H%M"),
+    }
+
+
+def _fetch_entsoe_generation_direct(start, end, area="EE"):
+    params = {
+        "documentType": "A75",
+        "processType": "A16",
+        "in_Domain": ENTSOE_DOMAINS[area],
+        **_entsoe_period_params(start, end),
+    }
+    xml, diag = _entsoe_status_query(params)
+    if not xml:
+        return pd.DataFrame(), diag
+    long = _parse_entsoe_series(xml, "generation_mw")
+    if long.empty:
+        return pd.DataFrame(), "ENTSO-E A75 vastus oli tühi"
+    long["technology"] = long["psr_type"].map(ENTSOE_PSR_NAMES).fillna(long["psr_type"])
+    wide = long.pivot_table(
+        index="time_local", columns="technology", values="generation_mw", aggfunc="sum"
+    ).sort_index()
+    return wide.reset_index(), "OK"
+
+
+def _fetch_entsoe_load_direct(start, end, area="EE"):
+    params = {
+        "documentType": "A65",
+        "processType": "A16",
+        "outBiddingZone_Domain": ENTSOE_DOMAINS[area],
+        **_entsoe_period_params(start, end),
+    }
+    xml, diag = _entsoe_status_query(params)
+    if not xml:
+        return pd.DataFrame(), diag
+    df = _parse_entsoe_series(xml, "load_mw")
+    if df.empty:
+        return pd.DataFrame(), "ENTSO-E A65 vastus oli tühi"
+    return df[["time_local","load_mw"]].dropna().sort_values("time_local"), "OK"
+
+
+def _fetch_entsoe_generation_chunks(start, end, area="EE"):
+    """Monthly chunks to keep A75 responses bounded."""
+    frames = []
+    cur = pd.Timestamp(start)
+    end = pd.Timestamp(end)
+    last_diag = "OK"
+    while cur < end:
+        nxt = min(cur + pd.Timedelta(days=31), end)
+        df, diag = _fetch_entsoe_generation_direct(cur, nxt, area)
+        if not df.empty:
+            frames.append(df)
+        elif diag != "OK":
+            last_diag = diag
+        cur = nxt
+    if not frames:
+        return pd.DataFrame(), last_diag
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates("time_local").sort_values("time_local")
+    return merged, last_diag
+
+
+def _fetch_entsoe_load_chunks(start, end, area="EE"):
+    frames = []
+    cur = pd.Timestamp(start)
+    end = pd.Timestamp(end)
+    last_diag = "OK"
+    while cur < end:
+        nxt = min(cur + pd.Timedelta(days=31), end)
+        df, diag = _fetch_entsoe_load_direct(cur, nxt, area)
+        if not df.empty:
+            frames.append(df)
+        elif diag != "OK":
+            last_diag = diag
+        cur = nxt
+    if not frames:
+        return pd.DataFrame(), last_diag
+    merged = pd.concat(frames, ignore_index=True).drop_duplicates("time_local").sort_values("time_local")
+    return merged, last_diag
+
+
+@st.cache_data(ttl=300)
+def fetch_entsoe_diagnostic():
+    now = pd.Timestamp.now(tz="UTC")
+    _, diag_g = _fetch_entsoe_generation_direct(now - pd.Timedelta(hours=6), now, "EE")
+    _, diag_l = _fetch_entsoe_load_direct(now - pd.Timedelta(hours=6), now, "EE")
+    return {"generation": diag_g, "load": diag_l}
+
 
 def _empty_market_df():
     return pd.DataFrame(columns=["Date", "Close"])
@@ -827,31 +951,10 @@ def fetch_frequency_reserves_full():
 
 @st.cache_data(ttl=300)
 def fetch_entsoe_generation_data():
-    """ENTSO-E actual generation only; no mock fallback."""
-    api_key = st.secrets.get("ENTSOE_API_KEY", "")
-    if not api_key:
-        return pd.DataFrame(), False
-    try:
-        from entsoe import EntsoePandasClient
-        client = EntsoePandasClient(api_key=api_key)
-        now = pd.Timestamp.now(tz="UTC")
-        start = now - pd.Timedelta(days=2)
-        end = now + pd.Timedelta(hours=1)
-        df_gen = client.query_generation("EE", start=start, end=end)
-        if not isinstance(df_gen, pd.DataFrame) or df_gen.empty:
-            return pd.DataFrame(), False
-        df_gen = df_gen.tz_convert(TALLINN_TZ)
-        if isinstance(df_gen.columns, pd.MultiIndex):
-            if "Actual Aggregated" in df_gen.columns.get_level_values(-1):
-                df_gen = df_gen.xs("Actual Aggregated", level=-1, axis=1, drop_level=True)
-            else:
-                df_gen = df_gen.T.groupby(level=0).sum(min_count=1).T
-        df_gen = df_gen.apply(pd.to_numeric, errors="coerce")
-        df_gen = df_gen.reset_index()
-        df_gen = df_gen.rename(columns={df_gen.columns[0]: "time_local"})
-        return df_gen, True
-    except Exception:
-        return pd.DataFrame(), False
+    """ENTSO-E A75/A16 actual generation directly from official REST API."""
+    now = pd.Timestamp.now(tz="UTC")
+    df, diag = _fetch_entsoe_generation_direct(now - pd.Timedelta(days=2), now, "EE")
+    return df, (not df.empty)
 
 
 @st.cache_data(ttl=300)
@@ -1334,7 +1437,7 @@ def normalize_umm_dataframe(rows):
 col_title, col_ctrl = st.columns([3, 2])
 with col_title:
     st.title("Energiaturu ja reservide reaalaja armatuurlaud")
-    st.caption("Build 8.1 • UMM + validated EEX gas • LVA-EST fixed")
+    st.caption("Build 8.2 • UMM + EEX gas + direct ENTSO-E REST")
     st.caption(f"Käivitusfail: {Path(__file__).name}")
 with col_ctrl:
     sub_col1, sub_col2 = st.columns([2, 1])
@@ -1919,7 +2022,12 @@ with tab_gen:
     if is_live_entsoe:
         st.success("🟢 Reaalajas ühendatud ENTSO-E Transparency REST API-ga")
     else:
-        st.info("ℹ️ Kuvatakse Eesti tootmissüsteemi struktuurne jaotus. Reaalaja otseliideseks lisa Streamliti saladustesse `ENTSOE_API_KEY`.")
+        _entsoe_diag = fetch_entsoe_diagnostic()
+        st.error(
+            "ENTSO-E actual-andmed pole saadaval. "
+            f"A75 tootmine: {_entsoe_diag.get('generation')} | "
+            f"A65 tarbimine: {_entsoe_diag.get('load')}"
+        )
 
     st.markdown("#### ⚡ Reaalaja süsteemivoogude joongraafik (Tarbimine, Taastuvad, Fossiil, Import Soomest ja Lätist)")
 

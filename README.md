@@ -32,3 +32,10 @@ Nord Pool UMM otsepäringu fallback on `data/umm.json`, mida uuendab `.github/wo
 - Both constants are now defined in all three entrypoints.
 - The function also contains fixed public-URL fallbacks, so this exact NameError
   cannot take down the app again.
+
+## V8.2 ENTSO-E fix
+- Core ENTSO-E access no longer depends on `entsoe-py`.
+- Actual generation: official web-api `documentType=A75`, `processType=A16`.
+- Actual total load: official web-api `documentType=A65`, `processType=A16`.
+- Errors are shown in the UI instead of being swallowed.
+- YTD requests are split into monthly chunks to avoid oversized responses.
