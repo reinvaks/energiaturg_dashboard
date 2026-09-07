@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from zoneinfo import ZoneInfo
+from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
 import pandas as pd
@@ -11,6 +12,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import streamlit as st
+from umm_client import fetch_umm_messages, load_snapshot
 
 # Lehe seadistus
 st.set_page_config(
@@ -1173,6 +1175,83 @@ def build_commodity_monthly_table(df_comm, unit_str):
     return pd.DataFrame(rows)
 
 
+
+@st.cache_data(ttl=120)
+def fetch_nordpool_umm():
+    """Nord Pool UMM REST API primary; last GitHub snapshot as fallback."""
+    rows, meta = fetch_umm_messages(limit=500, max_pages=4, retries=3)
+    if rows and not meta.error:
+        return rows, {
+            "source": meta.source,
+            "fetched_at": meta.fetched_at,
+            "status_code": meta.status_code,
+            "error": None,
+            "fallback": False,
+        }
+
+    snapshot = Path("data/umm.json")
+    if snapshot.exists():
+        try:
+            snap_rows, snap_meta = load_snapshot(snapshot)
+            if snap_rows:
+                return snap_rows, {
+                    "source": "GitHub snapshot",
+                    "fetched_at": snap_meta.get("fetched_at"),
+                    "status_code": snap_meta.get("status_code"),
+                    "error": meta.error,
+                    "fallback": True,
+                }
+        except Exception as exc:
+            fallback_error = f"{type(exc).__name__}: {exc}"
+        else:
+            fallback_error = "Snapshot was empty"
+    else:
+        fallback_error = "Snapshot file data/umm.json not found"
+
+    return [], {
+        "source": meta.source,
+        "fetched_at": meta.fetched_at,
+        "status_code": meta.status_code,
+        "error": meta.error or fallback_error,
+        "fallback": False,
+    }
+
+
+def normalize_umm_dataframe(rows):
+    """Latest revision per message ID and active-event subset."""
+    if not rows:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df = pd.DataFrame(rows)
+    for c in ["publication_time", "event_start", "event_end"]:
+        if c in df.columns:
+            df[c] = pd.to_datetime(df[c], utc=True, errors="coerce")
+
+    # Latest publication/revision per message ID. Keep rows without an ID as-is.
+    if "message_id" in df.columns:
+        ids = df["message_id"].fillna("").astype(str)
+        with_id = df[ids.str.len() > 0].copy()
+        without_id = df[ids.str.len() == 0].copy()
+        if not with_id.empty:
+            sort_cols = [c for c in ["message_id", "publication_time", "version"] if c in with_id.columns]
+            with_id = with_id.sort_values(sort_cols, na_position="first")
+            with_id = with_id.groupby("message_id", as_index=False).tail(1)
+        df = pd.concat([with_id, without_id], ignore_index=True)
+
+    if "affected_capacity" in df.columns:
+        df["affected_capacity"] = pd.to_numeric(df["affected_capacity"], errors="coerce")
+    if "installed_capacity" in df.columns:
+        df["installed_capacity"] = pd.to_numeric(df["installed_capacity"], errors="coerce")
+    if "available_capacity" in df.columns:
+        df["available_capacity"] = pd.to_numeric(df["available_capacity"], errors="coerce")
+
+    now = pd.Timestamp.now(tz="UTC")
+    starts = df["event_start"] if "event_start" in df.columns else pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
+    ends = df["event_end"] if "event_end" in df.columns else pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns, UTC]")
+    active = df[(starts.isna() | (starts <= now)) & (ends.isna() | (ends >= now))].copy()
+    return df, active
+
+
 # --- 2. PÄIS, AUTO-REFRESH JA ÜHTNE PERIOODIVALIK ---
 
 col_title, col_ctrl = st.columns([3, 2])
@@ -1231,7 +1310,7 @@ selected_period_label = st.segmented_control(
 )
 selected_days = period_config[selected_period_label]
 
-with st.spinner("Laadin ametlikke andmeid (Elering, ENTSO-E, GIE, EEX, EIA, BTD)..."):
+with st.spinner("Laadin ametlikke andmeid (Elering, ENTSO-E, Nord Pool UMM, GIE, EEX, EIA, BTD)..."):
     df_short_all = fetch_elering_regional_short_term()
     df_raw_multi, df_daily_multi, df_monthly_multi = fetch_elering_long_history_multi(years=5)
     df_ttf_full = fetch_realtime_commodity_data("NATURAL_GAS", "TTF")
@@ -1245,6 +1324,9 @@ with st.spinner("Laadin ametlikke andmeid (Elering, ENTSO-E, GIE, EEX, EIA, BTD)
     eurostat_prices = fetch_eurostat_electricity_prices()
     cap_5y_live = fetch_entsoe_installed_wind_solar([2022, 2023, 2024, 2025, 2026])
     gas_ytd = fetch_eurostat_gas_ytd()
+    umm_rows, umm_meta = fetch_nordpool_umm()
+
+umm_df, active_umm = normalize_umm_dataframe(umm_rows)
 
 cutoff_dt = pd.to_datetime(datetime.now().date() - timedelta(days=selected_days))
 
@@ -1412,7 +1494,7 @@ def _fmt_metric(value, unit="", decimals=1):
 
 # --- 4. GRAAFIKUD JA VAHELEHED ---
 
-tab_ee_core, tab_el, tab_gen, tab_gas, tab_reserves, tab_oil, tab_co2, tab_custom = st.tabs([
+tab_ee_core, tab_el, tab_gen, tab_gas, tab_reserves, tab_oil, tab_co2, tab_umm, tab_custom = st.tabs([
     "🇪🇪 Eesti energeetika",
     "⚡ Elekter (Regioon & Euroopa kaart)",
     "🏭 Elektritootmisvõimsused (Eesti)",
@@ -1420,6 +1502,7 @@ tab_ee_core, tab_el, tab_gen, tab_gas, tab_reserves, tab_oil, tab_co2, tab_custo
     "🔄 Sagedusreservid (BBCM)",
     "🛢️ Brent Nafta",
     "🌱 EU ETS Süsinikukvoot",
+    "📣 Nord Pool UMM",
     "🔍 Kohandatud perioodipäring",
 ])
 
@@ -2006,7 +2089,88 @@ with tab_co2:
         st.markdown("📍 **Allikas:** [EEX EUA Primary Market Auction Report](https://www.eex.com/en/market-data/market-data-hub/environmentals/eex-eua-primary-auction-spot-download)")
 
 
-# --- VAHELEHT 7: KOHANDATUD PERIOODIPÄRING ---
+
+# --- VAHELEHT 7: NORD POOL UMM ---
+with tab_umm:
+    st.markdown("### 📣 Nord Pool UMM — kiireloomulised turuteated")
+    st.caption(
+        "Nord Pool UMM on REMIT Article 4 avaldamiskanal. "
+        "Mõjutatud MW on teatepõhine; eri UMM-ide võimsusi ei summeerita süsteemi netokatkestuseks."
+    )
+
+    if umm_meta.get("fallback"):
+        st.warning(
+            "Nord Pool UMM otsepäring ei vastanud; kuvatakse viimast GitHub Actionsi snapshot'i. "
+            f"Snapshot: {umm_meta.get('fetched_at') or 'aeg teadmata'}."
+        )
+    elif umm_meta.get("error"):
+        st.error(f"Nord Pool UMM andmed pole saadaval: {umm_meta.get('error')}")
+    else:
+        status = umm_meta.get("status_code")
+        fetched = umm_meta.get("fetched_at")
+        st.caption(f"Andmeallikas: Nord Pool UMM REST API · HTTP {status or '—'} · päring {fetched or '—'}")
+
+    if umm_df.empty:
+        st.info("UMM teateid ei ole hetkel võimalik kuvada.")
+    else:
+        only_active = st.toggle("Ainult aktiivsed", value=True, key="umm_only_active")
+        u = active_umm.copy() if only_active else umm_df.copy()
+
+        areas = []
+        if "area" in u.columns:
+            areas = sorted(
+                x for x in u["area"].dropna().astype(str).unique()
+                if x and x.lower() not in {"nan", "none"}
+            )
+        area_sel = st.multiselect("Piirkond", areas, default=[], key="umm_area_filter")
+        if area_sel:
+            u = u[u["area"].astype(str).isin(area_sel)]
+
+        if "affected_capacity" in u.columns:
+            sort_cols = ["affected_capacity"]
+            if "publication_time" in u.columns:
+                sort_cols.append("publication_time")
+            u = u.sort_values(sort_cols, ascending=False, na_position="last")
+        elif "publication_time" in u.columns:
+            u = u.sort_values("publication_time", ascending=False, na_position="last")
+
+        cols = [
+            c for c in [
+                "area", "asset_name", "market_participant", "status", "message_type",
+                "affected_capacity", "installed_capacity", "available_capacity",
+                "publication_time", "event_start", "event_end", "reason", "source_url"
+            ] if c in u.columns
+        ]
+
+        st.dataframe(
+            u[cols],
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "area": "Piirkond",
+                "asset_name": "Vara / seade",
+                "market_participant": "Turuosaline",
+                "status": "Staatus",
+                "message_type": "Teate tüüp",
+                "affected_capacity": st.column_config.NumberColumn("Mõjutatud MW", format="%.0f"),
+                "installed_capacity": st.column_config.NumberColumn("Installeeritud MW", format="%.0f"),
+                "available_capacity": st.column_config.NumberColumn("Saadaval MW", format="%.0f"),
+                "publication_time": st.column_config.DatetimeColumn("Avaldatud", format="DD.MM.YYYY HH:mm"),
+                "event_start": st.column_config.DatetimeColumn("Algus", format="DD.MM.YYYY HH:mm"),
+                "event_end": st.column_config.DatetimeColumn("Lõpp", format="DD.MM.YYYY HH:mm"),
+                "reason": "Põhjus / kirjeldus",
+                "source_url": st.column_config.LinkColumn("Nord Pool"),
+            },
+        )
+
+        st.caption(
+            "Mõjutatud MW: kasutatakse UMM-is raporteeritud unavailable capacity väärtust; "
+            "kui see puudub, arvutatakse ainult juhul, kui nii installed kui available capacity on teates olemas. "
+            "Puuduvaid võimsusi ei oletata."
+        )
+
+
+# --- VAHELEHT 8: KOHANDATUD PERIOODIPÄRING ---
 with tab_custom:
     st.markdown("### 🔍 Energiaturu hindade päring valitud perioodil")
     st.write("Vali meelepärane algus- ja lõppkuupäev, et arvutada aritmeetiline keskmine, madalaim ja kõrgeim hind.")

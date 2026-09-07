@@ -36,3 +36,14 @@ GIE_API_KEY = "..."
 Kui allikas ei vasta, API võti puudub, skeemi ei saa usaldusväärselt tõlgendada või mõõdiku definitsioon ei sobi allikaga, kuvab rakendus puuduva väärtuse. Mock-, juhuslikke, hard-coded või teistest instrumentidest tuletatud hindu/mahud ei kasutata.
 
 - Inčukalns storage stock: primary source is Conexus Baltic Grid Storage Stocks; GIE AGSI+ is Latvia fallback/cross-check only.
+
+
+## Nord Pool UMM
+
+- Primary: `https://ummapi.nordpoolgroup.com/messages`
+- Streamlit cache TTL: 120 s
+- Same message ID is reduced to its latest revision before display.
+- Active UMM means event_start <= now <= event_end, allowing missing start/end.
+- `affected_capacity` is message-level only and is never summed into a system-wide outage total.
+- Fallback: `data/umm.json`, refreshed by GitHub Actions every 15 minutes.
+- If neither direct API nor snapshot is available, the UI shows unavailable status; no synthetic UMM data is created.
