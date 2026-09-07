@@ -17,3 +17,9 @@ GIE_API_KEY = "..."
 ```
 
 Nord Pool UMM otsepäringu fallback on `data/umm.json`, mida uuendab `.github/workflows/update-umm.yml`.
+
+## V7 gas fix
+- TTF: official EEX TTF NGP current + 60-day history.
+- Estonia/Latvia gas: official EEX LVA-EST NGP current + 60-day history.
+- Legacy GET Baltic BGSI is not fabricated; Baltic-Finnish trading migrated to EEX in September 2025.
+- CSV parsing is deterministic/defensive and does not invent fallback prices.
