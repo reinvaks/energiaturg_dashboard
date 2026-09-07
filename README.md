@@ -51,3 +51,18 @@ the top of the page. It reports:
 - number of returned data points
 
 The app can no longer silently hide the ENTSO-E failure.
+
+## V8.4 source health
+The app now has a unified source-health panel for:
+- Elering
+- ENTSO-E
+- Nord Pool UMM
+- GIE AGSI+
+- Conexus Inčukalns
+- EEX TTF NGP
+- EEX LVA-EST NGP
+- U.S. EIA Brent
+- EEX EUA auction
+- Baltic Transparency Dashboard aFRR/mFRR
+
+Green = working, yellow = fallback/stale/partial, red = unavailable or credentials missing.

@@ -183,6 +183,234 @@ def _fetch_entsoe_load_chunks(start, end, area="EE"):
 
 
 
+
+def _status_age_text(ts):
+    if ts is None or ts == "":
+        return ""
+    try:
+        t = pd.to_datetime(ts, utc=True, errors="coerce")
+        if pd.isna(t):
+            return str(ts)
+        age = pd.Timestamp.now(tz="UTC") - t
+        mins = int(age.total_seconds() // 60)
+        if mins < 60:
+            return f"{mins} min vana"
+        hrs = mins // 60
+        if hrs < 48:
+            return f"{hrs} h vana"
+        return f"{hrs // 24} p vana"
+    except Exception:
+        return str(ts)
+
+
+def _status_card(name, result):
+    """Render one compact source-health status."""
+    level = result.get("level", "error")
+    msg = result.get("message", "Staatus teadmata")
+    detail = result.get("detail")
+    if detail:
+        msg = f"{msg} · {detail}"
+    if level == "ok":
+        st.success(f"{name}: {msg}", icon="✅")
+    elif level == "warning":
+        st.warning(f"{name}: {msg}", icon="⚠️")
+    else:
+        st.error(f"{name}: {msg}", icon="🚨")
+
+
+@st.cache_data(ttl=120)
+def test_elering_connection():
+    now_utc = datetime.now(timezone.utc)
+    start = (now_utc - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    end = (now_utc + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    url = f"https://dashboard.elering.ee/api/nps/price?start={start}&end={end}"
+    try:
+        r = requests.get(url, timeout=(5, 15))
+        if r.status_code != 200:
+            return {"level":"error","message":f"HTTP {r.status_code}","detail":r.text[:160]}
+        data = r.json().get("data", {})
+        n = sum(len(data.get(k, [])) for k in ("ee","lv","lt","fi"))
+        if n == 0:
+            return {"level":"warning","message":"HTTP 200, kuid hinnapunkte ei leitud"}
+        latest = []
+        for k in ("ee","lv","lt","fi"):
+            for row in data.get(k, []):
+                if "timestamp" in row:
+                    latest.append(row["timestamp"])
+        detail = f"{n} hinnapunkti"
+        if latest:
+            latest_ts = pd.to_datetime(max(latest), unit="s", utc=True)
+            detail += f" · uusim {_status_age_text(latest_ts)}"
+        return {"level":"ok","message":"ühendus korras","detail":detail}
+    except Exception as exc:
+        return {"level":"error","message":f"{type(exc).__name__}: {exc}"}
+
+
+@st.cache_data(ttl=300)
+def test_gie_connection():
+    key = st.secrets.get("GIE_API_KEY", "") or st.secrets.get("GIE_AGSI_API_KEY", "")
+    if not key:
+        return {"level":"error","message":"GIE API võti puudub Streamlit Secrets'is"}
+    try:
+        r = requests.get(
+            "https://agsi.gie.eu/api",
+            params={"type":"eu","size":2,"reverse":"true"},
+            headers={"x-key":key, "User-Agent":"EnergiaturuArmatuurlaud/source-health"},
+            timeout=(5,20),
+        )
+        if r.status_code != 200:
+            return {"level":"error","message":f"HTTP {r.status_code}","detail":r.text[:160]}
+        rows = r.json().get("data", [])
+        if not rows:
+            return {"level":"warning","message":"HTTP 200, kuid andmeridu ei leitud"}
+        d = rows[0]
+        gas_day = d.get("gasDayStart") or d.get("gasDay")
+        detail = f"viimane gaasipäev {gas_day}" if gas_day else f"{len(rows)} rida"
+        return {"level":"ok","message":"ühendus korras","detail":detail}
+    except Exception as exc:
+        return {"level":"error","message":f"{type(exc).__name__}: {exc}"}
+
+
+@st.cache_data(ttl=300)
+def test_conexus_connection():
+    try:
+        r = requests.get("https://www.conexus.lv/storage-stocks", timeout=(5,20),
+                         headers={"User-Agent":"EnergiaturuArmatuurlaud/source-health"})
+        if r.status_code != 200:
+            return {"level":"error","message":f"HTTP {r.status_code}","detail":r.text[:160]}
+        tables = pd.read_html(StringIO(r.text))
+        found = False
+        latest_day = None
+        latest_total = None
+        for t in tables:
+            cols = [str(c).lower() for c in t.columns]
+            if any("gas day" in c for c in cols) and any(c.strip()=="total" for c in cols):
+                gas_col = next(c for c in t.columns if "gas day" in str(c).lower())
+                total_col = next(c for c in t.columns if str(c).strip().lower()=="total")
+                tmp = t.copy()
+                tmp["_d"] = pd.to_datetime(tmp[gas_col], errors="coerce")
+                tmp["_v"] = pd.to_numeric(tmp[total_col].astype(str).str.replace(r"[^0-9.\-]","",regex=True), errors="coerce")
+                tmp = tmp.dropna(subset=["_d","_v"]).sort_values("_d")
+                if not tmp.empty:
+                    row = tmp.iloc[-1]
+                    latest_day = row["_d"].date()
+                    latest_total = row["_v"] / 1_000_000_000.0
+                    found = True
+                    break
+        if not found:
+            return {"level":"warning","message":"Leht vastas, kuid storage-stocks tabelit ei leitud"}
+        return {"level":"ok","message":"ühendus korras","detail":f"{latest_day} · {latest_total:.3f} TWh"}
+    except Exception as exc:
+        return {"level":"error","message":f"{type(exc).__name__}: {exc}"}
+
+
+@st.cache_data(ttl=300)
+def test_eex_ttf_connection():
+    try:
+        txt = _fetch_eex_public_csv(EEX_TTF_CURRENT_URL)
+        if not txt:
+            return {"level":"error","message":"EEX TTF current CSV ei olnud loetav"}
+        df = _parse_eex_ngp_exact(txt)
+        if df.empty:
+            return {"level":"warning","message":"CSV loeti, kuid kehtivat TTF NGP väärtust ei leitud"}
+        row = df.sort_values("Date").iloc[-1]
+        return {"level":"ok","message":"TTF NGP olemas","detail":f"{row['Date'].date()} · {row['Close']:.3f} €/MWh"}
+    except Exception as exc:
+        return {"level":"error","message":f"{type(exc).__name__}: {exc}"}
+
+
+@st.cache_data(ttl=300)
+def test_eex_lvaest_connection():
+    try:
+        txt = _fetch_eex_public_csv(EEX_LVAEST_CURRENT_URL)
+        if not txt:
+            return {"level":"error","message":"EEX LVA-EST current CSV ei olnud loetav"}
+        df = _parse_eex_ngp_exact(txt)
+        if df.empty:
+            return {"level":"warning","message":"CSV loeti, kuid kehtivat LVA-EST NGP väärtust ei leitud"}
+        row = df.sort_values("Date").iloc[-1]
+        return {"level":"ok","message":"LVA-EST NGP olemas","detail":f"{row['Date'].date()} · {row['Close']:.3f} €/MWh"}
+    except Exception as exc:
+        return {"level":"error","message":f"{type(exc).__name__}: {exc}"}
+
+
+@st.cache_data(ttl=600)
+def test_eia_brent_connection():
+    try:
+        r = requests.get(EIA_BRENT_HTML_URL, timeout=(5,20), headers={"User-Agent":"EnergiaturuArmatuurlaud/source-health"})
+        if r.status_code != 200:
+            return {"level":"error","message":f"HTTP {r.status_code}"}
+        tables = pd.read_html(StringIO(r.text))
+        if not tables:
+            return {"level":"warning","message":"EIA leht vastas, kuid tabelit ei leitud"}
+        return {"level":"ok","message":"ühendus korras","detail":"Brent daily source"}
+    except Exception as exc:
+        return {"level":"error","message":f"{type(exc).__name__}: {exc}"}
+
+
+@st.cache_data(ttl=600)
+def test_eex_eua_connection():
+    try:
+        r = requests.get(EEX_EUA_AUCTION_URL, timeout=(5,30))
+        if r.status_code != 200:
+            return {"level":"error","message":f"HTTP {r.status_code}"}
+        df = _parse_eua_auction_workbook(r.content)
+        if df.empty:
+            return {"level":"warning","message":"EEX EUA fail loeti, kuid kehtivaid oksjoniridu ei leitud"}
+        row = df.sort_values("Date").iloc[-1]
+        return {"level":"ok","message":"EUA oksjonihind olemas","detail":f"{row['Date'].date()} · {row['Close']:.2f} €/tCO₂"}
+    except Exception as exc:
+        return {"level":"error","message":f"{type(exc).__name__}: {exc}"}
+
+
+@st.cache_data(ttl=300)
+def test_btd_reserves_connection():
+    statuses = []
+    for name, url in [("aFRR", VOLTON_AFRR_CAPACITY), ("mFRR", VOLTON_MFRR_CAPACITY)]:
+        try:
+            r = requests.get(url, timeout=(5,20))
+            if r.status_code != 200:
+                statuses.append(f"{name} HTTP {r.status_code}")
+                continue
+            rows = r.json().get("rows", [])
+            statuses.append(f"{name} {len(rows)} rida")
+        except Exception as exc:
+            statuses.append(f"{name} {type(exc).__name__}")
+    ok = any("rida" in s and not s.endswith("0 rida") for s in statuses)
+    return {
+        "level":"ok" if ok else "error",
+        "message":"reserviandmed saadaval" if ok else "reserviandmed puuduvad",
+        "detail":" · ".join(statuses),
+    }
+
+
+@st.cache_data(ttl=120)
+def test_nordpool_umm_connection():
+    try:
+        rows, meta = fetch_umm_messages(limit=10, max_pages=1, retries=1)
+        if rows and not meta.error:
+            return {
+                "level":"ok",
+                "message":"UMM API korras",
+                "detail":f"HTTP {meta.status_code or 200} · {len(rows)} teadet",
+            }
+        snapshot = Path("data/umm.json")
+        if snapshot.exists():
+            try:
+                snap_rows, snap_meta = load_snapshot(snapshot)
+                if snap_rows:
+                    return {
+                        "level":"warning",
+                        "message":"otse-API ei tööta, kasutatakse snapshot'i",
+                        "detail":f"{len(snap_rows)} teadet · {snap_meta.get('fetched_at') or 'aeg teadmata'}",
+                    }
+            except Exception:
+                pass
+        return {"level":"error","message":f"UMM pole saadaval: {meta.error or 'tühi vastus'}"}
+    except Exception as exc:
+        return {"level":"error","message":f"{type(exc).__name__}: {exc}"}
+
+
 @st.cache_data(ttl=120)
 def test_entsoe_connection():
     """Minimal direct REST smoke test for the configured ENTSO-E token."""
@@ -1518,7 +1746,7 @@ def normalize_umm_dataframe(rows):
 col_title, col_ctrl = st.columns([3, 2])
 with col_title:
     st.title("Energiaturu ja reservide reaalaja armatuurlaud")
-    st.caption("Build 8.3 • explicit ENTSO-E diagnostics")
+    st.caption("Build 8.4 • source health dashboard")
     st.caption(f"Käivitusfail: {Path(__file__).name}")
 with col_ctrl:
     sub_col1, sub_col2 = st.columns([2, 1])
@@ -1539,20 +1767,31 @@ with col_ctrl:
 current_tallinn_time = datetime.now(timezone.utc).astimezone(TALLINN_TZ).strftime("%H:%M:%S")
 st.caption(f"Viimati värskendatud: **{current_tallinn_time}** (Eesti aeg)")
 
-entsoe_test = test_entsoe_connection()
-if entsoe_test.get("ok"):
-    st.success(
-        f"ENTSO-E ühendus: OK — {entsoe_test.get('message')}",
-        icon="✅",
-    )
-else:
-    st.error(
-        "ENTSO-E ühendus EI TÖÖTA — "
-        f"etapp: {entsoe_test.get('stage')} | "
-        f"HTTP: {entsoe_test.get('http_status') or '—'} | "
-        f"{entsoe_test.get('message')}",
-        icon="🚨",
-    )
+st.markdown("### 🔌 Andmeallikate staatus")
+with st.expander("Näita kõigi allikate ühenduse ja värskuse staatust", expanded=False):
+    _src1, _src2 = st.columns(2)
+
+    with _src1:
+        _status_card("Elering", test_elering_connection())
+        _status_card(
+            "ENTSO-E",
+            {
+                "level": "ok" if (entsoe_test := test_entsoe_connection()).get("ok") else "error",
+                "message": entsoe_test.get("message"),
+                "detail": f"etapp {entsoe_test.get('stage')} · HTTP {entsoe_test.get('http_status') or '—'}",
+            },
+        )
+        _status_card("Nord Pool UMM", test_nordpool_umm_connection())
+        _status_card("GIE AGSI+", test_gie_connection())
+        _status_card("Conexus Inčukalns", test_conexus_connection())
+
+    with _src2:
+        _status_card("EEX TTF NGP", test_eex_ttf_connection())
+        _status_card("EEX LVA-EST NGP", test_eex_lvaest_connection())
+        _status_card("EIA Brent", test_eia_brent_connection())
+        _status_card("EEX EUA", test_eex_eua_connection())
+        _status_card("BTD aFRR/mFRR", test_btd_reserves_connection())
+
 
 
 refresh_seconds = 0
